@@ -154,7 +154,8 @@ class Traffic {
 
       const prev = c.v;
       c.v += clamp(target - c.v, -9 * dt, 3 * dt);
-      c.parts.tailMat.emissiveIntensity = c.v < prev - 0.01 || c.v < 0.3 ? 1.3 : 0.25;
+      c.braking = c.v < prev - 0.01 || c.v < 0.3;
+      c.parts.tailMat.emissiveIntensity = c.braking ? 1.3 : 0.25;
 
       if (c.phase === 'road') {
         c.s += c.v * dt;
@@ -170,4 +171,65 @@ class Traffic {
       for (const s of c.parts.spinners) s.rotation.x += (c.v * dt) / 0.36;
     }
   }
+
+  // ---------- Multiplayer: the host simulates, everyone else mirrors ----------
+
+  snapshot() {
+    const out = [];
+    const r = (v, k) => Math.round(v * k) / k;
+    for (const c of this.cars) out.push(r(c.x, 100), r(c.z, 100), r(c.h, 1000), r(c.v, 100), c.braking ? 1 : 0);
+    return out;
+  }
+
+  applySnapshot(data) {
+    const count = Math.floor(data.length / 5);
+    while (this.cars.length > count) this.cars.pop().remove(this.scene);
+    while (this.cars.length < count) {
+      const k = this.cars.length, car = new TrafficCar(this.scene);
+      car.onHit = () => { Sound.horn(0.25, 330); if (this.onPuppetHit) this.onPuppetHit(k); };
+      this.cars.push(car);
+    }
+    this.cars.forEach((c, k) => {
+      const o = k * 5;
+      setSnap(c, data[o], data[o + 1], data[o + 2], data[o + 3]);
+      c.braking = data[o + 4] === 1;
+    });
+  }
+
+  updatePuppets(dt) {
+    for (const c of this.cars) {
+      followSnap(c, dt);
+      c.parts.tailMat.emissiveIntensity = c.braking ? 1.3 : 0.25;
+    }
+  }
+
+  clear() {
+    for (const c of this.cars) c.remove(this.scene);
+    this.cars = [];
+  }
 }
+
+// Network-driven cars glide towards where their latest update says they are
+// now (last position plus speed × time since), so 10 updates a second look smooth.
+function setSnap(o, x, z, h, v) {
+  const fresh = !o.snap || Math.hypot(x - o.x, z - o.z) > 15;
+  o.snap = { x, z, h, v, at: performance.now() / 1000 };
+  if (fresh) { o.x = x; o.z = z; o.h = h; }
+}
+
+function followSnap(o, dt) {
+  const s = o.snap;
+  if (!s) return;
+  const age = Math.min(0.5, performance.now() / 1000 - s.at);
+  const px = s.x + Math.sin(s.h) * s.v * age, pz = s.z + Math.cos(s.h) * s.v * age;
+  const k = 1 - Math.exp(-dt * 12);
+  o.x += (px - o.x) * k;
+  o.z += (pz - o.z) * k;
+  o.h += wrapAngle(s.h - o.h) * k;
+  o.v = s.v;
+  const g = o.parts.group;
+  g.position.set(o.x, 0, o.z);
+  g.rotation.y = o.h;
+  for (const w of o.parts.spinners) w.rotation.x += (o.v * dt) / 0.36;
+}
+

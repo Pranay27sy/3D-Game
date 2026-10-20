@@ -1,0 +1,57 @@
+name: Android APK
+
+on:
+  push:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  apk:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 17
+
+      - uses: android-actions/setup-android@v3
+
+      - name: Install
+        run: npm ci
+
+      - name: Copy the game into the Android project
+        run: npm run android
+
+      - name: Build APK
+        working-directory: android
+        run: |
+          chmod +x gradlew
+          ./gradlew assembleDebug --no-daemon
+          cp app/build/outputs/apk/debug/app-debug.apk ../DowntownDriver.apk
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DowntownDriver-apk
+          path: DowntownDriver.apk
+
+      # A release with a fixed name gives a plain download link to open on a phone.
+      - name: Publish download link
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          TAG="android-${GITHUB_REF_NAME//\//-}"
+          gh release delete "$TAG" --yes --cleanup-tag || true
+          gh release create "$TAG" DowntownDriver.apk \
+            --target "$GITHUB_SHA" \
+            --prerelease \
+            --title "Downtown Driver for Android ($GITHUB_REF_NAME)" \
+            --notes "Debug build of ${GITHUB_SHA::7}. Install DowntownDriver.apk on each phone (allow installing from unknown sources)."

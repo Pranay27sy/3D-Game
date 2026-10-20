@@ -85,6 +85,13 @@
       <h2 class="section-label">Missions</h2>
       <div class="missions" id="mission-list"></div>
 
+      <h2 class="section-label">Play with friends</h2>
+      <button type="button" id="btn-multiplayer" class="mission-card mp-card">
+        <span class="card-top"><span class="tag">Wi-Fi</span><span class="lvl">2–10 players</span></span>
+        <span class="card-name">Multiplayer</span>
+        <span class="card-blurb">Race your friends through traffic or roam the city together. Everyone joins the same Wi-Fi or the host phone's hotspot. No internet needed.</span>
+      </button>
+
       <h2 class="section-label">Garage</h2>
       <div class="paints" id="paint-list"></div>
 
@@ -129,16 +136,69 @@
     </div>
   </div>
 
+  <div id="lobby" class="overlay dim" hidden>
+    <div class="sign dialog dialog-wide" role="dialog" aria-labelledby="lobby-title">
+      <div id="lobby-setup" class="dialog-body">
+        <div class="eyebrow">Multiplayer · up to 10 players</div>
+        <h2 id="lobby-title" class="dialog-title">Play with friends</h2>
+        <p class="dialog-text">Connect every phone to the same Wi-Fi, or to the host phone's hotspot. One player hosts and the others join.</p>
+        <label class="field" for="mp-name"><span>Your name</span><input id="mp-name" maxlength="14" autocomplete="off" spellcheck="false"></label>
+        <div class="actions"><button type="button" id="btn-host" class="btn primary">Host a game</button></div>
+        <div class="join">
+          <div class="join-head"><h3 class="sub">Games on this Wi-Fi</h3><button type="button" id="btn-scan" class="chip">Search again</button></div>
+          <div id="mp-found" class="found"></div>
+          <label class="field" for="mp-address"><span>Or type the host's address</span>
+            <span class="join-row"><input id="mp-address" placeholder="192.168.43.1" inputmode="decimal" autocomplete="off" spellcheck="false"><button type="button" id="btn-join" class="btn">Join</button></span>
+          </label>
+        </div>
+        <p id="mp-error" class="error" role="alert"></p>
+        <div class="actions"><button type="button" id="btn-lobby-back" class="btn">Back to missions</button></div>
+      </div>
+      <div id="lobby-room" class="dialog-body" hidden>
+        <div class="eyebrow">Multiplayer · <span id="room-count">1 of 10 players</span></div>
+        <h2 id="room-title" class="dialog-title">Your game room</h2>
+        <p id="room-address" class="dialog-text"></p>
+        <div id="room-modes" class="modes" role="group" aria-label="Game mode">
+          <button type="button" class="mode" data-mode="race">Race</button>
+          <button type="button" class="mode" data-mode="roam">Free roam</button>
+        </div>
+        <p id="room-mode-blurb" class="dialog-text small"></p>
+        <ul id="room-players" class="players"></ul>
+        <p id="room-status" class="dialog-text small"></p>
+        <div class="actions">
+          <button type="button" id="btn-room-start" class="btn primary">Start race</button>
+          <button type="button" id="btn-room-leave" class="btn">Leave</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="standings" class="overlay dim" hidden>
+    <div class="sign dialog" role="dialog" aria-labelledby="standings-title">
+      <div class="eyebrow">Race results</div>
+      <h2 id="standings-title" class="dialog-title">Race standings</h2>
+      <ol id="standings-list" class="players standings"></ol>
+      <p id="standings-note" class="dialog-text small"></p>
+      <div class="actions">
+        <button type="button" id="btn-standings-room" class="btn primary">Back to room</button>
+        <button type="button" id="btn-standings-leave" class="btn">Leave game</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="countdown" class="countdown" aria-live="assertive" hidden></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="vendor/three.min.js"></script>
 <script src="js/world.js"></script>
 <script src="js/car.js"></script>
 <script src="js/audio.js"></script>
 <script src="js/traffic.js"></script>
 <script src="js/input.js"></script>
 <script src="js/missions.js"></script>
+<script src="js/net.js"></script>
 <script src="js/main.js"></script>
+<script src="js/multiplayer.js"></script>
 </body>
 </html>

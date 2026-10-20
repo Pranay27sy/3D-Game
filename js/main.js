@@ -175,6 +175,10 @@ function drawMinimap() {
   g.stroke();
   g.fillStyle = 'rgba(255, 255, 255, 0.5)';
   for (const t of traffic.cars) g.fillRect(X(t.x) - 2, X(t.z) - 2, 4, 4);
+  for (const r of MP.remoteList()) {
+    g.fillStyle = cssColor(r.info.paint);
+    g.beginPath(); g.arc(X(r.x), X(r.z), 5, 0, Math.PI * 2); g.fill();
+  }
   const m = game.mission;
   if (m && m.goal) {
     g.fillStyle = m.type === 'parking' ? '#4f93ff' : '#3ce07a';
@@ -245,8 +249,9 @@ function goMenu() {
   if (game.mission) { game.mission.dispose(); game.mission = null; }
   traffic.blocked = new Set();
   game.state = 'menu';
+  game.menuOpen = false;
   player.parts.group.visible = false;
-  for (const id of ['hud', 'controls', 'brief', 'pause', 'result']) show(id, false);
+  for (const id of ['hud', 'controls', 'brief', 'pause', 'result', 'lobby', 'standings']) show(id, false);
   show('menu', true);
   renderMenu();
   traffic.reset(32);
@@ -289,6 +294,32 @@ function startMission(type) {
   $('btn-start').focus();
 }
 
+// A multiplayer round: no briefing, the countdown starts straight away.
+function startNetRound(round, slot) {
+  if (game.mission) game.mission.dispose();
+  player.setColor(MP.myPaint());
+  player.parts.group.visible = true;
+  player.reset(slot[0], slot[1], slot[2]);
+  player.unlimitedFuel = true;
+  game.mission = round;
+  game.state = 'playing';
+  game.menuOpen = false;
+  lastJunction = null;
+  Input.reset();
+  // The name or address box may still hold focus, which would swallow driving keys.
+  if (document.activeElement && document.activeElement.blur) document.activeElement.blur();
+  hud.root.classList.toggle('no-goal', !round.goal);
+  hud.fuelGauge.hidden = true;
+  setText(hud.tag, round.meta.tag);
+  setText(hud.level, `${MP.players.size} players`);
+  setText(hud.name, round.meta.name);
+  updateCamera(0, true);
+  updateHud();
+  for (const id of ['menu', 'pause', 'result', 'brief']) show(id, false);
+  show('hud', true);
+  show('controls', true);
+}
+
 function beginPlay() {
   show('brief', false);
   show('controls', true);
@@ -298,11 +329,23 @@ function beginPlay() {
 
 function pause() {
   if (game.state !== 'playing') return;
+  if (MP.active) {
+    // The shared game keeps running; your car just holds the brake.
+    game.menuOpen = true;
+    $('btn-restart').hidden = true;
+    $('btn-quit').textContent = 'Leave game';
+    show('pause', true);
+    $('btn-resume').focus();
+    return;
+  }
+  $('btn-restart').hidden = false;
+  $('btn-quit').textContent = 'Missions';
   game.state = 'paused';
   show('pause', true);
   $('btn-resume').focus();
 }
 function resume() {
+  if (MP.active) { game.menuOpen = false; show('pause', false); Input.reset(); return; }
   if (game.state !== 'paused') return;
   show('pause', false);
   game.state = 'playing';
@@ -359,7 +402,7 @@ Input.on('camera', () => {
   showToast(CAM_LABELS[game.camMode]);
 });
 Input.on('horn', () => { Sound.init(); Sound.horn(); });
-Input.on('pause', () => (game.state === 'paused' ? resume() : pause()));
+Input.on('pause', () => (game.state === 'paused' || game.menuOpen ? resume() : pause()));
 Input.on('mute', () => {
   Sound.setMuted(!Sound.muted);
   hud.mute.textContent = Sound.muted ? 'Sound off' : 'Sound on';
@@ -370,11 +413,11 @@ $('btn-start').addEventListener('click', beginPlay);
 $('btn-brief-back').addEventListener('click', goMenu);
 $('btn-resume').addEventListener('click', resume);
 $('btn-restart').addEventListener('click', () => startMission(game.mission.type));
-$('btn-quit').addEventListener('click', goMenu);
+$('btn-quit').addEventListener('click', () => (MP.active ? MP.leave() : goMenu()));
 $('btn-again').addEventListener('click', () => startMission(game.mission.type));
 $('btn-result-menu').addEventListener('click', goMenu);
-document.addEventListener('visibilitychange', () => { if (document.hidden) pause(); });
-addEventListener('blur', pause);
+document.addEventListener('visibilitychange', () => { if (document.hidden && !MP.active) pause(); });
+addEventListener('blur', () => { if (!MP.active) pause(); });
 
 // ---------- Main loop ----------
 let lastJunction = null;
@@ -397,24 +440,29 @@ function frame(now) {
     game.t += dt;
     world.updateLights(game.t);
   }
-  if (st === 'menu') {
+  if (MP.active) {
+    MP.frame(dt);
+  } else if (st === 'menu') {
     traffic.update(dt, game.t, null, []);
   } else if (st === 'brief' || st === 'result') {
     traffic.update(dt, game.t, player, game.mission.statics);
-  } else if (st === 'playing') {
+  }
+  if (st === 'playing') {
     const m = game.mission;
     Input.update(dt);
-    player.update(dt, Input.state, world, traffic.cars.concat(m.statics));
+    const hold = game.menuOpen || (m.frozen && m.frozen());
+    const input = hold ? { steer: Input.state.steer, throttle: 0, brake: 1 } : Input.state;
+    player.update(dt, input, world, traffic.cars.concat(m.statics, MP.remoteList()));
     for (const e of player.events.splice(0)) {
       Sound.crash(e.closing);
       if (e.dmg > 4) showToast(`Crash: −${Math.round(e.dmg)}% condition`, 'bad');
       m.onCrash(e);
     }
-    traffic.update(dt, game.t, player, m.statics);
+    if (!MP.active) traffic.update(dt, game.t, player, m.statics);
     checkRedLight();
     const result = m.update(dt);
     updateHud();
-    if (result) finish(result);
+    if (result) (MP.active ? MP.localFinish(result) : finish(result));
   }
   Sound.setEngine(player.v, Input.state.throttle, game.state === 'playing');
   updateCamera(dt, false);
@@ -424,4 +472,5 @@ function frame(now) {
 
 renderMenu();
 updateCamera(0, true);
-requestAnimationFrame(frame);
+// Start once every script (multiplayer.js loads after this file) is in.
+addEventListener('DOMContentLoaded', () => requestAnimationFrame(frame));
