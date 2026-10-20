@@ -1,6 +1,6 @@
 {
   "name": "downtown-driver",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "private": true,
   "description": "3D city driving game with LAN multiplayer for Android",
   "scripts": {
@@ -11,6 +11,7 @@
   "dependencies": {
     "@capacitor/android": "6.2.1",
     "@capacitor/core": "6.2.1",
+    "@capacitor/haptics": "^6.0.2",
     "ws": "8.18.0"
   },
   "devDependencies": {

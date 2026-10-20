@@ -55,7 +55,7 @@ class Mission {
 
     if (this.type === 'parking') {
       const bay = world.randomLanePoint();
-      const len = Math.max(6.2, 8.6 - (L - 1) * 0.3);
+      const len = Math.max(player.L + 1.9, player.L + 4.3 - (L - 1) * 0.3);
       this.bay = { ...world.lanePoint(bay.i, bay.j, bay.d, CITY.PITCH / 2), len };
       traffic.blocked.add(segKey(bay.i, bay.j, bay.d));
       for (const side of [-1, 1]) {
@@ -141,6 +141,13 @@ class Mission {
     if (this.type === 'safe') this.fail('You hit something. Safe drivers keep their distance.');
   }
 
+  onPedHit() {
+    this.crashes++;
+    if (this.type === 'safe') this.fail('You hit a pedestrian.');
+    else if (this.type === 'speed') { this.timeLimit -= 10; this.game.toast('You hit a pedestrian: −10 seconds', 'bad'); }
+    else this.game.toast('Watch out for pedestrians!', 'bad');
+  }
+
   onRedLight() {
     this.redLights++;
     if (this.type === 'safe') this.fail('You ran a red light.');
@@ -178,7 +185,7 @@ class Mission {
     const rx = p.x - b.x, rz = p.z - b.z;
     const along = rx * D.x + rz * D.z, lat = rx * r.x + rz * r.z;
     const angle = Math.abs(wrapAngle(p.h - b.h));
-    const inside = Math.abs(along) < (b.len - CAR.LENGTH) / 2 + 0.3 && Math.abs(lat) < 0.9;
+    const inside = Math.abs(along) < (b.len - p.L) / 2 + 0.3 && Math.abs(lat) < 0.9;
     const straight = angle < 0.21;
     this.bayFill.color.setHex(inside && straight ? 0x3ce07a : inside ? 0xf2c230 : 0x2f7bff);
     this.parkState = inside ? (straight ? 'Hold still…' : 'Straighten up') : '';

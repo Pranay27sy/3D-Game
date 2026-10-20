@@ -25,27 +25,33 @@
       </div>
     </section>
 
-    <div class="nav" id="nav" aria-label="Direction to destination">
-      <svg id="nav-arrow" viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 L34 33 L20 25 L6 33 Z"/></svg>
-      <span id="nav-dist">0 m</span>
+    <div class="top-center">
+      <div class="hud-buttons">
+        <button type="button" id="btn-map" class="chip" hidden>Map</button>
+        <button type="button" id="btn-radio" class="chip">Radio off</button>
+        <button type="button" id="btn-camera" class="chip">View</button>
+        <button type="button" id="btn-pause" class="chip">Pause</button>
+      </div>
+      <div class="nav" id="nav" aria-label="Direction to destination">
+        <svg id="nav-arrow" viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 L34 33 L20 25 L6 33 Z"/></svg>
+        <span id="nav-dist">0 m</span>
+      </div>
     </div>
 
     <div class="top-right">
-      <canvas id="minimap" width="280" height="280" aria-label="City map"></canvas>
-      <div class="hud-buttons">
-        <button type="button" id="btn-camera" class="chip">View</button>
-        <button type="button" id="btn-mute" class="chip" aria-pressed="true">Sound on</button>
-        <button type="button" id="btn-pause" class="chip">Pause</button>
-      </div>
+      <canvas id="minimap" width="280" height="280" aria-label="Minimap"></canvas>
+      <div id="hud-stars" class="stars" aria-label="Wanted level" hidden><i></i><i></i><i></i><i></i><i></i></div>
     </div>
 
     <section class="dash" aria-label="Dashboard">
       <div class="speed"><span id="hud-speed">0</span><small>km/h</small></div>
       <div class="gauges">
-        <div class="gauge"><span>Condition</span><div class="bar"><i id="bar-health"></i></div></div>
+        <div class="gauge"><span id="gauge-health-label">Condition</span><div class="bar"><i id="bar-health"></i></div></div>
         <div class="gauge" id="gauge-fuel"><span>Fuel</span><div class="bar"><i id="bar-fuel"></i></div></div>
       </div>
     </section>
+
+    <div id="hud-waiting" class="waiting" hidden>Waiting for the host's phone…</div>
   </div>
 
   <div id="controls" hidden>
@@ -58,15 +64,21 @@
           <rect x="92" y="5" width="16" height="22" rx="4" class="mark"/>
         </svg>
       </div>
+      <div id="stick" class="stick" role="slider" aria-label="Joystick: drag to walk"><div id="stick-knob" class="stick-knob"></div></div>
     </div>
     <div class="right-controls">
-      <div class="small-buttons">
+      <div class="small-buttons car-only">
         <button type="button" id="btn-gear" class="gear" aria-label="Change gear (Q)">D</button>
         <button type="button" id="btn-horn" class="horn">Horn</button>
       </div>
-      <div id="pedal-brake" class="pedal brake" role="button" aria-label="Brake (S or Space)"><span>Brake</span></div>
-      <div id="pedal-gas" class="pedal gas" role="button" aria-label="Gas (W)"><span>Gas</span></div>
+      <div id="pedal-brake" class="pedal brake car-only" role="button" aria-label="Brake (S or Space)"><span>Brake</span></div>
+      <div id="pedal-gas" class="pedal gas car-only" role="button" aria-label="Gas (W)"><span>Gas</span></div>
+      <div class="foot-buttons foot-only">
+        <button type="button" id="btn-jump" class="round">Jump</button>
+        <div id="btn-run" class="round big" role="button" aria-label="Run (Shift)">Run</div>
+      </div>
     </div>
+    <button type="button" id="btn-enter" class="enter-btn" hidden>Get out</button>
   </div>
 
   <div id="menu" class="overlay menu">
@@ -76,27 +88,37 @@
           <span class="shield" aria-hidden="true">72</span>
           <div>
             <h1>Downtown Driver</h1>
-            <p>City driving missions with real traffic and traffic lights</p>
+            <p>Port Sundale · open city, missions and Wi-Fi multiplayer</p>
           </div>
         </div>
-        <div class="coins"><span id="menu-coins">0</span><small>coins</small></div>
+        <div class="brand-side">
+          <div class="coins"><span id="menu-coins">$0</span><small>cash</small></div>
+          <button type="button" id="btn-settings" class="chip">Settings</button>
+        </div>
       </header>
 
-      <h2 class="section-label">Missions</h2>
+      <button type="button" id="btn-open-city" class="hero-card">
+        <span class="card-top"><span class="tag">Free roam</span><span class="lvl" id="menu-packages">0 of 20 hidden packages found</span></span>
+        <span class="hero-name">Open City</span>
+        <span class="card-blurb">Walk, drive, take any car in Port Sundale. Do taxi fares, deliveries and street races for cash, fly off the stunt ramps, find hidden packages and outrun the police. Day turns to night, and sometimes it rains.</span>
+      </button>
+
+      <h2 class="section-label">Driving missions</h2>
       <div class="missions" id="mission-list"></div>
 
       <h2 class="section-label">Play with friends</h2>
       <button type="button" id="btn-multiplayer" class="mission-card mp-card">
         <span class="card-top"><span class="tag">Wi-Fi</span><span class="lvl">2–10 players</span></span>
         <span class="card-name">Multiplayer</span>
-        <span class="card-blurb">Race your friends through traffic or roam the city together. Everyone joins the same Wi-Fi or the host phone's hotspot. No internet needed.</span>
+        <span class="card-blurb">Open City together, races through traffic, or Cops &amp; Robbers. Everyone joins the same Wi-Fi or the host phone's hotspot. No internet needed.</span>
       </button>
 
       <h2 class="section-label">Garage</h2>
+      <div class="paints" id="car-list"></div>
       <div class="paints" id="paint-list"></div>
 
-      <p class="keys"><b>Keyboard</b> W or ↑ gas · S, ↓ or Space brake · A/D or ←/→ steer · Q gear · C camera · H horn · P pause · M sound.
-        <b>Touch</b> drag the wheel, hold the pedals.</p>
+      <p class="keys"><b>Keyboard</b> W/↑ gas or walk · S/↓/Space brake · A/D/←/→ steer · F get in or out · Shift run · Space jump · Q gear · C camera · H horn · R radio · M map · P pause · N sound.
+        <b>Touch</b> drag the wheel or joystick, hold the pedals, drag the view to look around.</p>
     </div>
   </div>
 
@@ -108,7 +130,7 @@
       <dl id="brief-rules" class="rules"></dl>
       <div class="actions">
         <button type="button" id="btn-start" class="btn primary">Start driving</button>
-        <button type="button" id="btn-brief-back" class="btn">Missions</button>
+        <button type="button" id="btn-brief-back" class="btn">Main menu</button>
       </div>
     </div>
   </div>
@@ -119,7 +141,8 @@
       <div class="actions">
         <button type="button" id="btn-resume" class="btn primary">Resume</button>
         <button type="button" id="btn-restart" class="btn">Restart mission</button>
-        <button type="button" id="btn-quit" class="btn">Missions</button>
+        <button type="button" id="btn-pause-settings" class="btn">Settings</button>
+        <button type="button" id="btn-quit" class="btn">Main menu</button>
       </div>
     </div>
   </div>
@@ -131,8 +154,43 @@
       <dl id="result-stats" class="rules"></dl>
       <div class="actions">
         <button type="button" id="btn-again" class="btn primary">Next level</button>
-        <button type="button" id="btn-result-menu" class="btn">Missions</button>
+        <button type="button" id="btn-result-menu" class="btn">Main menu</button>
       </div>
+    </div>
+  </div>
+
+  <div id="map" class="overlay map-overlay" hidden>
+    <canvas id="map-canvas" aria-label="City map. Tap to set a waypoint."></canvas>
+    <div class="map-bar">
+      <div class="map-legend">
+        <span><i style="background:#f2c230"></i>Taxi</span><span><i style="background:#f08a24"></i>Delivery</span><span><i style="background:#d04fd0"></i>Race</span>
+        <span><i style="background:#ff9a2a"></i>Spray &amp; Repair</span><span><i style="background:#4f8dff"></i>Police</span><span><i style="background:#ff5a5a"></i>Hospital</span>
+      </div>
+      <p class="map-hint">Tap the map to set a waypoint. Tap it again to clear it.</p>
+      <button type="button" id="btn-map-close" class="btn primary">Close map</button>
+    </div>
+  </div>
+
+  <div id="settings" class="overlay dim" hidden>
+    <div class="sign dialog dialog-wide" role="dialog" aria-labelledby="settings-title">
+      <h2 id="settings-title" class="dialog-title">Settings</h2>
+      <div class="setting">
+        <span>Graphics</span>
+        <div class="seg" data-setting="quality"><button type="button" data-value="low">Low</button><button type="button" data-value="medium">Medium</button><button type="button" data-value="high">High</button></div>
+      </div>
+      <p class="dialog-text small">Low runs smoothest on older phones: no shadows and fewer people and cars.</p>
+      <div class="setting">
+        <span>Steering</span>
+        <div class="seg" data-setting="steering"><button type="button" data-value="wheel">Wheel</button><button type="button" data-value="tilt">Tilt phone</button></div>
+      </div>
+      <label class="setting" for="set-sensitivity"><span>Steering sensitivity</span><input id="set-sensitivity" type="range" min="0.5" max="1.5" step="0.05" data-setting="sensitivity"></label>
+      <label class="setting" for="set-volume"><span>Sound effects</span><input id="set-volume" type="range" min="0" max="1" step="0.05" data-setting="volume"></label>
+      <label class="setting" for="set-music"><span>Radio volume</span><input id="set-music" type="range" min="0" max="1" step="0.05" data-setting="music"></label>
+      <label class="setting check" for="set-mute"><span>Mute all sound</span><input id="set-mute" type="checkbox"></label>
+      <label class="setting check" for="set-vibration"><span>Vibration</span><input id="set-vibration" type="checkbox" data-setting="vibration"></label>
+      <label class="setting check" for="set-swap"><span>Pedals on the left</span><input id="set-swap" type="checkbox" data-setting="swap"></label>
+      <label class="setting check" for="set-day"><span>Day and night cycle</span><input id="set-day" type="checkbox" data-setting="dayCycle"></label>
+      <div class="actions"><button type="button" id="btn-settings-close" class="btn primary">Done</button></div>
     </div>
   </div>
 
@@ -152,21 +210,22 @@
           </label>
         </div>
         <p id="mp-error" class="error" role="alert"></p>
-        <div class="actions"><button type="button" id="btn-lobby-back" class="btn">Back to missions</button></div>
+        <div class="actions"><button type="button" id="btn-lobby-back" class="btn">Main menu</button></div>
       </div>
       <div id="lobby-room" class="dialog-body" hidden>
         <div class="eyebrow">Multiplayer · <span id="room-count">1 of 10 players</span></div>
         <h2 id="room-title" class="dialog-title">Your game room</h2>
         <p id="room-address" class="dialog-text"></p>
         <div id="room-modes" class="modes" role="group" aria-label="Game mode">
+          <button type="button" class="mode" data-mode="roam">Open City</button>
           <button type="button" class="mode" data-mode="race">Race</button>
-          <button type="button" class="mode" data-mode="roam">Free roam</button>
+          <button type="button" class="mode" data-mode="cops">Cops &amp; Robbers</button>
         </div>
         <p id="room-mode-blurb" class="dialog-text small"></p>
         <ul id="room-players" class="players"></ul>
         <p id="room-status" class="dialog-text small"></p>
         <div class="actions">
-          <button type="button" id="btn-room-start" class="btn primary">Start race</button>
+          <button type="button" id="btn-room-start" class="btn primary">Start</button>
           <button type="button" id="btn-room-leave" class="btn">Leave</button>
         </div>
       </div>
@@ -175,7 +234,7 @@
 
   <div id="standings" class="overlay dim" hidden>
     <div class="sign dialog" role="dialog" aria-labelledby="standings-title">
-      <div class="eyebrow">Race results</div>
+      <div class="eyebrow" id="standings-eyebrow">Race results</div>
       <h2 id="standings-title" class="dialog-title">Race standings</h2>
       <ol id="standings-list" class="players standings"></ol>
       <p id="standings-note" class="dialog-text small"></p>
@@ -186,17 +245,29 @@
     </div>
   </div>
 
+  <div id="banner" class="banner" hidden>
+    <div id="banner-title" class="banner-title">WASTED</div>
+    <div id="banner-sub" class="banner-sub"></div>
+  </div>
   <div id="countdown" class="countdown" aria-live="assertive" hidden></div>
   <div id="toast" class="toast" role="status" aria-live="polite"></div>
 </div>
 
 <script src="vendor/three.min.js"></script>
 <script src="js/world.js"></script>
+<script src="js/effects.js"></script>
 <script src="js/car.js"></script>
+<script src="js/person.js"></script>
 <script src="js/audio.js"></script>
+<script src="js/radio.js"></script>
+<script src="js/sky.js"></script>
+<script src="js/settings.js"></script>
 <script src="js/traffic.js"></script>
+<script src="js/peds.js"></script>
+<script src="js/police.js"></script>
 <script src="js/input.js"></script>
 <script src="js/missions.js"></script>
+<script src="js/openworld.js"></script>
 <script src="js/net.js"></script>
 <script src="js/main.js"></script>
 <script src="js/multiplayer.js"></script>

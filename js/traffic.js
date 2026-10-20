@@ -6,17 +6,39 @@ const WAIT_DIST = STOP_LINE + 0.6 + CAR.LENGTH / 2;
 
 const segKey = (i, j, d) => `${i},${j},${d}`;
 
+function randomTrafficKind() {
+  const r = Math.random();
+  const type = r < 0.04 ? 'police' : r < 0.19 ? 'taxi' : r < 0.31 ? 'van' : r < 0.36 ? 'sports' : 'sedan';
+  return { type, colorIdx: Math.floor(Math.random() * TRAFFIC_COLORS.length) };
+}
+
+function trafficColor(type, colorIdx) { return type === 'taxi' ? TAXI_YELLOW : TRAFFIC_COLORS[colorIdx]; }
+
 class TrafficCar {
-  constructor(scene) {
-    const taxi = Math.random() < 0.18;
-    this.parts = buildCarMesh(taxi ? 0xf08a24 : TRAFFIC_COLORS[Math.floor(Math.random() * TRAFFIC_COLORS.length)], { taxi });
-    scene.add(this.parts.group);
+  constructor(scene, kind = randomTrafficKind()) {
+    this.scene = scene;
+    this.setKind(kind.type, kind.colorIdx);
     this.cruise = 9 + Math.random() * 4;
     this.v = 0;
     this.stun = 0;
     this.ghost = 0;
     this.blockedFor = 0;
     this.honked = false;
+  }
+
+  setKind(type, colorIdx) {
+    const shown = this.parts ? this.parts.group.visible : true;
+    if (this.parts) this.scene.remove(this.parts.group);
+    this.type = type;
+    this.colorIdx = colorIdx;
+    this.color = trafficColor(type, colorIdx);
+    this.spec = VEHICLES[type];
+    this.L = this.spec.L;
+    this.W = this.spec.W;
+    this.isPolice = type === 'police';
+    this.parts = buildCarMesh(type, this.color);
+    this.parts.group.visible = shown;
+    this.scene.add(this.parts.group);
   }
 
   remove(scene) { scene.remove(this.parts.group); }
@@ -74,6 +96,7 @@ class Traffic {
     this.scene = scene;
     this.cars = [];
     this.blocked = new Set();
+    this.recycleTimer = 0;
   }
 
   chooseExit(i, j, from) {
@@ -86,28 +109,59 @@ class Traffic {
     return opts.length ? opts[Math.floor(Math.random() * opts.length)] : reverseDir(from);
   }
 
-  reset(count, avoid) {
-    for (const c of this.cars) c.remove(this.scene);
-    this.cars = [];
+  // Drop a car onto a free lane spot, optionally within a distance band of focus.
+  place(car, focus, minD = 0, maxD = Infinity) {
     const { HALF, BLOCK } = CITY;
-    for (let k = 0, tries = 0; k < count && tries < count * 40; tries++) {
+    for (let tries = 0; tries < 60; tries++) {
       const p = this.world.randomLanePoint();
       if (this.blocked.has(segKey(p.i, p.j, p.d))) continue;
       const s = HALF + 2 + Math.random() * (BLOCK - WAIT_DIST - 4);
       const q = this.world.lanePoint(p.i, p.j, p.d, s);
-      if (avoid && Math.hypot(q.x - avoid.x, q.z - avoid.z) < 30) continue;
-      if (this.cars.some((c) => Math.hypot(c.x - q.x, c.z - q.z) < 12)) continue;
-      const car = new TrafficCar(this.scene);
+      if (focus) {
+        const d = Math.hypot(q.x - focus.x, q.z - focus.z);
+        if ((d < minD || d > maxD) && tries < 59) continue;
+      }
+      if (this.cars.some((c) => c !== car && Math.hypot(c.x - q.x, c.z - q.z) < 12) && tries < 59) continue;
       car.enterRoad(this, p.i, p.j, p.d, s);
       car.v = car.cruise * 0.7;
+      car.stun = 0;
+      return true;
+    }
+    return false;
+  }
+
+  reset(count, avoid) {
+    this.clear();
+    for (let k = 0; k < count; k++) {
+      const car = new TrafficCar(this.scene);
       this.cars.push(car);
-      k++;
+      if (!this.place(car, avoid, 30)) { car.remove(this.scene); this.cars.pop(); }
     }
   }
 
-  update(dt, t, player, statics) {
+  // The player took this car: it vanishes from traffic and a new one appears far away.
+  take(car, focus) {
+    const info = { type: car.type, color: car.color, x: car.x, z: car.z, h: car.h, v: car.v };
+    car.setKind(randomTrafficKind().type, Math.floor(Math.random() * TRAFFIC_COLORS.length));
+    this.place(car, focus, 120, 260);
+    return info;
+  }
+
+  // Keep traffic where the players are: cars far from everyone reappear nearby.
+  recycle(dt, focus) {
+    this.recycleTimer -= dt;
+    if (this.recycleTimer > 0 || !focus.length) return;
+    this.recycleTimer = 1;
+    for (const c of this.cars) {
+      const near = focus.some((f) => Math.hypot(c.x - f.x, c.z - f.z) < 230);
+      if (!near) this.place(c, focus[Math.floor(Math.random() * focus.length)], 90, 200);
+    }
+  }
+
+  // obstacles: everything else traffic should stop for (players, parked cars, people in the road).
+  update(dt, t, obstacles = []) {
     const world = this.world;
-    const others = player ? this.cars.concat(statics, [player]) : this.cars.concat(statics);
+    const others = this.cars.concat(obstacles);
     const { PITCH, HALF } = CITY;
     const stopS = PITCH - WAIT_DIST;
 
@@ -116,7 +170,6 @@ class Traffic {
       if (c.stun > 0) { c.stun -= dt; target = 0; }
       if (c.stun <= 0) c.honked = false;
 
-      // Traffic light at the end of this road segment.
       if (c.phase === 'road' && c.s < stopS + 0.6) {
         const n = world.node(c.i + DIRS[c.d].x, c.j + DIRS[c.d].z);
         const st = lightState(n, axisOf(c.d), t);
@@ -132,12 +185,12 @@ class Traffic {
       const fx = Math.sin(c.h), fz = Math.cos(c.h);
       let gapAhead = Infinity;
       for (const o of others) {
-        if (o === c || (c.ghost > 0 && o !== player)) continue;
+        if (o === c || (c.ghost > 0 && !o.isPlayer)) continue;
         const dx = o.x - c.x, dz = o.z - c.z;
         const ahead = dx * fx + dz * fz;
         if (ahead <= 0 || ahead > 18) continue;
         if (Math.abs(dx * -fz + dz * fx) > (ahead < 8 ? 2.8 : 2.3)) continue;
-        gapAhead = Math.min(gapAhead, ahead - 4.8);
+        gapAhead = Math.min(gapAhead, ahead - c.L / 2 - (o.L || 4.3) / 2 - 0.5);
       }
       if (gapAhead < Infinity) {
         const vf = Math.max(0, (gapAhead - 1.2) * 1.3);
@@ -169,20 +222,22 @@ class Traffic {
       g.position.set(c.x, 0, c.z);
       g.rotation.y = c.h;
       for (const s of c.parts.spinners) s.rotation.x += (c.v * dt) / 0.36;
+      if (c.isPolice) flashBar(c.parts, t, false);
     }
   }
 
   // ---------- Multiplayer: the host simulates, everyone else mirrors ----------
+  // Six numbers per car: x, z, heading, speed, brake light, kind (type * 10 + colour).
 
   snapshot() {
     const out = [];
     const r = (v, k) => Math.round(v * k) / k;
-    for (const c of this.cars) out.push(r(c.x, 100), r(c.z, 100), r(c.h, 1000), r(c.v, 100), c.braking ? 1 : 0);
+    for (const c of this.cars) out.push(r(c.x, 100), r(c.z, 100), r(c.h, 1000), r(c.v, 100), c.braking ? 1 : 0, VEHICLE_IDS.indexOf(c.type) * 10 + c.colorIdx);
     return out;
   }
 
   applySnapshot(data) {
-    const count = Math.floor(data.length / 5);
+    const count = Math.floor(data.length / 6);
     while (this.cars.length > count) this.cars.pop().remove(this.scene);
     while (this.cars.length < count) {
       const k = this.cars.length, car = new TrafficCar(this.scene);
@@ -190,10 +245,23 @@ class Traffic {
       this.cars.push(car);
     }
     this.cars.forEach((c, k) => {
-      const o = k * 5;
-      setSnap(c, data[o], data[o + 1], data[o + 2], data[o + 3]);
+      const o = k * 6, kind = data[o + 5];
+      const type = VEHICLE_IDS[Math.floor(kind / 10)] || 'sedan', colorIdx = kind % 10;
+      if (type !== c.type || colorIdx !== c.colorIdx) c.setKind(type, colorIdx);
+      if (setSnap(c, data[o], data[o + 1], data[o + 2], data[o + 3]) && c.taken) {
+        c.taken = false;
+        c.noCollide = false;
+        c.parts.group.visible = true;
+      }
       c.braking = data[o + 4] === 1;
     });
+  }
+
+  // On a client, hide a car the moment you take it; the host moves it away.
+  hidePuppet(c) {
+    c.taken = true;
+    c.noCollide = true;
+    c.parts.group.visible = false;
   }
 
   updatePuppets(dt) {
@@ -211,10 +279,12 @@ class Traffic {
 
 // Network-driven cars glide towards where their latest update says they are
 // now (last position plus speed × time since), so 10 updates a second look smooth.
-function setSnap(o, x, z, h, v) {
+// Returns true when the update was a jump (first update, or a teleport).
+function setSnap(o, x, z, h, v, y = 0) {
   const fresh = !o.snap || Math.hypot(x - o.x, z - o.z) > 15;
-  o.snap = { x, z, h, v, at: performance.now() / 1000 };
-  if (fresh) { o.x = x; o.z = z; o.h = h; }
+  o.snap = { x, z, h, v, y, at: performance.now() / 1000 };
+  if (fresh) { o.x = x; o.z = z; o.h = h; o.y = y; }
+  return fresh;
 }
 
 function followSnap(o, dt) {
@@ -225,11 +295,11 @@ function followSnap(o, dt) {
   const k = 1 - Math.exp(-dt * 12);
   o.x += (px - o.x) * k;
   o.z += (pz - o.z) * k;
+  o.y = (o.y || 0) + ((s.y || 0) - (o.y || 0)) * k;
   o.h += wrapAngle(s.h - o.h) * k;
   o.v = s.v;
   const g = o.parts.group;
-  g.position.set(o.x, 0, o.z);
+  g.position.set(o.x, o.y, o.z);
   g.rotation.y = o.h;
   for (const w of o.parts.spinners) w.rotation.x += (o.v * dt) / 0.36;
 }
-
