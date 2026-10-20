@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no">
+<title>Downtown Driver</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Overpass:ital,wght@0,500;0,700;0,800;0,900;1,900&family=Overpass+Mono:wght@600;700&display=swap">
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<div id="app">
+  <canvas id="scene" aria-label="3D city view"></canvas>
+
+  <div id="hud" hidden>
+    <section class="sign mission-panel" aria-label="Mission">
+      <div class="eyebrow"><span id="hud-tag">Time</span> · <span id="hud-level">Level 1</span></div>
+      <div class="mission-name" id="hud-name">Rush Hour</div>
+      <div class="objective" id="hud-objective">Stop at the green marker</div>
+      <div class="stat">
+        <span class="stat-label" id="hud-stat-label">Time left</span>
+        <span class="stat-value" id="hud-stat">1:00</span>
+      </div>
+    </section>
+
+    <div class="nav" id="nav" aria-label="Direction to destination">
+      <svg id="nav-arrow" viewBox="0 0 40 40" aria-hidden="true"><path d="M20 3 L34 33 L20 25 L6 33 Z"/></svg>
+      <span id="nav-dist">0 m</span>
+    </div>
+
+    <div class="top-right">
+      <canvas id="minimap" width="280" height="280" aria-label="City map"></canvas>
+      <div class="hud-buttons">
+        <button type="button" id="btn-camera" class="chip">View</button>
+        <button type="button" id="btn-mute" class="chip" aria-pressed="true">Sound on</button>
+        <button type="button" id="btn-pause" class="chip">Pause</button>
+      </div>
+    </div>
+
+    <section class="dash" aria-label="Dashboard">
+      <div class="speed"><span id="hud-speed">0</span><small>km/h</small></div>
+      <div class="gauges">
+        <div class="gauge"><span>Condition</span><div class="bar"><i id="bar-health"></i></div></div>
+        <div class="gauge" id="gauge-fuel"><span>Fuel</span><div class="bar"><i id="bar-fuel"></i></div></div>
+      </div>
+    </section>
+  </div>
+
+  <div id="controls" hidden>
+    <div class="wheel-wrap">
+      <div id="wheel" class="wheel" role="slider" aria-label="Steering wheel: drag to steer" aria-valuemin="-1" aria-valuemax="1">
+        <svg viewBox="0 0 200 200" aria-hidden="true">
+          <circle cx="100" cy="100" r="84" fill="none" class="rim" stroke-width="22"/>
+          <path d="M18 104 H76 M124 104 H182 M100 126 V184" class="spoke" stroke-width="18" stroke-linecap="round"/>
+          <circle cx="100" cy="104" r="26" class="hub"/>
+          <rect x="92" y="5" width="16" height="22" rx="4" class="mark"/>
+        </svg>
+      </div>
+    </div>
+    <div class="right-controls">
+      <div class="small-buttons">
+        <button type="button" id="btn-gear" class="gear" aria-label="Change gear (Q)">D</button>
+        <button type="button" id="btn-horn" class="horn">Horn</button>
+      </div>
+      <div id="pedal-brake" class="pedal brake" role="button" aria-label="Brake (S or Space)"><span>Brake</span></div>
+      <div id="pedal-gas" class="pedal gas" role="button" aria-label="Gas (W)"><span>Gas</span></div>
+    </div>
+  </div>
+
+  <div id="menu" class="overlay menu">
+    <div class="menu-inner">
+      <header class="brand">
+        <div class="sign brand-sign">
+          <span class="shield" aria-hidden="true">72</span>
+          <div>
+            <h1>Downtown Driver</h1>
+            <p>City driving missions with real traffic and traffic lights</p>
+          </div>
+        </div>
+        <div class="coins"><span id="menu-coins">0</span><small>coins</small></div>
+      </header>
+
+      <h2 class="section-label">Missions</h2>
+      <div class="missions" id="mission-list"></div>
+
+      <h2 class="section-label">Garage</h2>
+      <div class="paints" id="paint-list"></div>
+
+      <p class="keys"><b>Keyboard</b> W or ↑ gas · S, ↓ or Space brake · A/D or ←/→ steer · Q gear · C camera · H horn · P pause · M sound.
+        <b>Touch</b> drag the wheel, hold the pedals.</p>
+    </div>
+  </div>
+
+  <div id="brief" class="overlay dim" hidden>
+    <div class="sign dialog" role="dialog" aria-labelledby="brief-name">
+      <div class="eyebrow"><span id="brief-tag"></span> · <span id="brief-level"></span></div>
+      <h2 id="brief-name" class="dialog-title"></h2>
+      <p id="brief-blurb" class="dialog-text"></p>
+      <dl id="brief-rules" class="rules"></dl>
+      <div class="actions">
+        <button type="button" id="btn-start" class="btn primary">Start driving</button>
+        <button type="button" id="btn-brief-back" class="btn">Missions</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="pause" class="overlay dim" hidden>
+    <div class="sign dialog" role="dialog" aria-labelledby="pause-title">
+      <h2 id="pause-title" class="dialog-title">Paused</h2>
+      <div class="actions">
+        <button type="button" id="btn-resume" class="btn primary">Resume</button>
+        <button type="button" id="btn-restart" class="btn">Restart mission</button>
+        <button type="button" id="btn-quit" class="btn">Missions</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="result" class="overlay dim" hidden>
+    <div class="sign dialog" role="dialog" aria-labelledby="result-title">
+      <h2 id="result-title" class="dialog-title">Mission complete</h2>
+      <p id="result-reason" class="dialog-text"></p>
+      <dl id="result-stats" class="rules"></dl>
+      <div class="actions">
+        <button type="button" id="btn-again" class="btn primary">Next level</button>
+        <button type="button" id="btn-result-menu" class="btn">Missions</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+</div>
+
+<script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+<script src="js/world.js"></script>
+<script src="js/car.js"></script>
+<script src="js/audio.js"></script>
+<script src="js/traffic.js"></script>
+<script src="js/input.js"></script>
+<script src="js/missions.js"></script>
+<script src="js/main.js"></script>
+</body>
+</html>
