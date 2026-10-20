@@ -10,6 +10,7 @@ const SETTINGS_DEFAULTS = {
   vibration: true,
   swap: false,           // pedals on the left, wheel on the right
   dayCycle: true,
+  voices: true,          // Marathi speech
 };
 
 // What each graphics level changes.

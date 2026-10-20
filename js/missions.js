@@ -54,7 +54,7 @@ class Mission {
     traffic.blocked = new Set();
 
     if (this.type === 'parking') {
-      const bay = world.randomLanePoint();
+      const bay = this.cityPoint();
       const len = Math.max(player.L + 1.9, player.L + 4.3 - (L - 1) * 0.3);
       this.bay = { ...world.lanePoint(bay.i, bay.j, bay.d, CITY.PITCH / 2), len };
       traffic.blocked.add(segKey(bay.i, bay.j, bay.d));
@@ -72,10 +72,9 @@ class Mission {
       this.start = this.pickStart(70, 170);
       this.timeLimit = 75 + this.routeDist() / 8;
     } else if (this.type !== 'free') {
-      this.start = world.randomLanePoint();
+      this.start = this.cityPoint();
       const minDist = Math.min(380, 150 + L * 25);
-      let g, tries = 0;
-      do { g = world.randomLanePoint(); tries++; } while (tries < 200 && Math.abs(g.x - this.start.x) + Math.abs(g.z - this.start.z) < minDist);
+      const g = world.lanePointAround(this.start.x, this.start.z, minDist * 0.8, minDist * 0.8 + 220);
       this.goal = g;
       const m = makeBeam(0x3ce07a);
       m.position.set(g.x, 0, g.z);
@@ -83,7 +82,7 @@ class Mission {
       this.markers.push(m);
       this.beam = m;
     } else {
-      this.start = world.randomLanePoint();
+      this.start = this.cityPoint();
     }
 
     const dist = this.goal ? this.routeDist() : 0;
@@ -98,9 +97,16 @@ class Mission {
     traffic.reset(Math.min(46, count), player);
   }
 
+  // Missions start somewhere busy: near a random Mumbai station from Churchgate to Virar.
+  cityPoint() {
+    const hubs = Rail.stations.filter((st) => st.km <= 60);
+    const h = hubs[Math.floor(Math.random() * hubs.length)];
+    return this.game.world.lanePointAround(h.entrance.x, h.entrance.z, 0, 180);
+  }
+
   pickStart(min, max) {
     for (let k = 0; k < 300; k++) {
-      const p = this.game.world.randomLanePoint();
+      const p = this.game.world.lanePointAround(this.goal.x, this.goal.z, min * 0.7, max * 0.7);
       const d = Math.abs(p.x - this.goal.x) + Math.abs(p.z - this.goal.z);
       if (d >= min && d <= max && segKey(p.i, p.j, p.d) !== segKey(this.bay.i, this.bay.j, this.bay.d)) return p;
     }

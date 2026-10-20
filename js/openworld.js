@@ -1,25 +1,26 @@
 'use strict';
 
-// Open City: free roam in Port Sundale. Get in and out of cars, take any car,
-// earn cash from jobs, collect hidden packages, hit the stunt ramps, and stay
-// ahead of the police. Busted or wasted costs cash and puts you back on foot.
+// Open world Mumbai, Colaba to Boisar. Get in and out of cars, take any car,
+// ride the local train, earn cash from jobs, collect hidden packages, hit the
+// stunt ramps, and stay ahead of the police. Busted or wasted costs cash and
+// puts you back on foot.
 const JOB_TYPES = {
   taxi: { name: 'Taxi fares', color: 0xf2c230, icon: 'T' },
   delivery: { name: 'Express delivery', color: 0xf08a24, icon: 'D' },
   race: { name: 'Street race', color: 0xd04fd0, icon: 'R' },
 };
-const BLIP_COLORS = { police: '#4f8dff', hospital: '#ff5a5a', spray: '#ff9a2a', taxi: '#f2c230', delivery: '#f08a24', race: '#d04fd0', goal: '#3ce07a', waypoint: '#ffffff', friend: '#ffffff' };
-const BLIP_ICONS = { police: 'P', hospital: 'H', spray: 'S', taxi: 'T', delivery: 'D', race: 'R' };
+const BLIP_COLORS = { police: '#4f8dff', hospital: '#ff5a5a', spray: '#ff9a2a', taxi: '#f2c230', delivery: '#f08a24', race: '#d04fd0', goal: '#3ce07a', waypoint: '#ffffff', friend: '#ffffff', station: '#b0303c' };
+const BLIP_ICONS = { police: 'P', hospital: 'H', spray: 'S', taxi: 'T', delivery: 'D', race: 'R', station: 'L' };
 const SPRAY_COST = 150;
 
-function money(n) { return `$${Math.round(n).toLocaleString()}`; }
+function money(n) { return `₹${Math.round(n).toLocaleString('en-IN')}`; }
 
 class OpenWorld {
   constructor(game, { net = false, police = true, start = null, keepPlayer = false } = {}) {
     this.game = game;
     this.type = 'open';
     this.net = net;
-    this.meta = { name: 'Open City', tag: CITY_NAME };
+    this.meta = { name: 'Mumbai', tag: 'Open world' };
     this.level = 0;
     this.elapsed = 0;
     this.crashes = 0;
@@ -32,6 +33,9 @@ class OpenWorld {
     this.respawn = 0;
     this.crimeCooldown = 0;
     this.goal = null;
+    this.rail = null;        // { stage: 'wait' | 'ride', station, dir, k, getOff }
+    this.chatTimer = 2;
+    this.shoutTimer = 0;
 
     const P = (this.police = new Police(game));
     P.enabled = police;
@@ -42,7 +46,7 @@ class OpenWorld {
     this.spawnParked();
     this.buildMarkers();
     if (!keepPlayer) {
-      const s = start || game.world.randomLanePoint();
+      const s = start || game.world.home;
       this.spawnInOwnCar(s.x, s.z, s.h);
     }
   }
@@ -54,7 +58,7 @@ class OpenWorld {
     const kinds = ['sports', 'sedan', 'van', 'sedan', 'taxi', 'sports', 'sedan', 'van', 'sedan', 'sedan', 'sports'];
     spots.forEach((s, k) => {
       const type = kinds[k % kinds.length];
-      this.statics.push(new ParkedCar(scene, type, type === 'taxi' ? TAXI_YELLOW : PAINTS[k % PAINTS.length].hex, s.x, s.z, s.h));
+      this.statics.push(new ParkedCar(scene, type, PAINTS[k % PAINTS.length].hex, s.x, s.z, s.h));
     });
     const yard = world.info.find((b) => b.district === 'stunts');
     if (yard) {
@@ -77,6 +81,14 @@ class OpenWorld {
       const m = makeBeam(0xff9a2a);
       m.scale.set(0.9, 0.4, 0.9);
       m.position.set(lm.x, 0, lm.z);
+      scene.add(m);
+      this.markers.push(m);
+    }
+    // Railway station entrances.
+    for (const st of Rail.stations) {
+      const m = makeBeam(0xb0303c);
+      m.scale.set(0.45, 0.25, 0.45);
+      m.position.set(st.entrance.x, CITY.CURB, st.entrance.z);
       scene.add(m);
       this.markers.push(m);
     }
@@ -108,6 +120,7 @@ class OpenWorld {
     this.statics = [];
     this.police.removeAll();
     this.clearJob();
+    this.closeTrainPanel();
     this.game.world.curbsSolid = true;
     Sound.setSiren(0);
   }
@@ -120,9 +133,9 @@ class OpenWorld {
     pc.wrecked = player.wrecked;
     this.statics.push(pc);
     this.trimParked();
-    // Step out on the driver's side (the left).
+    // Step out on the driver's side: the right, in India.
     const f = player.forward, health = walker.health, out = player.W / 2 + 0.7;
-    walker.reset(player.x + f.z * out, player.z - f.x * out, player.h);
+    walker.reset(player.x - f.z * out, player.z + f.x * out, player.h);
     walker.health = health;
     if (this.job && this.job.type !== 'race') this.endJob(false, 'You left the car.');
     setAvatar('foot');
@@ -159,7 +172,8 @@ class OpenWorld {
       } else {
         traffic.take(c, this.game.walker);
       }
-      peds.spawnDriver(c.x, c.z, c.h);
+      const driver = peds.spawnDriver(c.x, c.z, c.h);
+      Speech.say('thief', driver, this.game.walker);
       this.police.crime(type === 'police' ? 2 : 1, c.x, c.z, type !== 'police');
       this.game.toast(type === 'police' ? 'You stole a police car!' : `You took a ${VEHICLES[type].name.toLowerCase()}`);
     } else {
@@ -203,6 +217,9 @@ class OpenWorld {
 
   onPedHit(ped, vehicle) {
     if (vehicle !== this.game.player) return;
+    Speech.say('hit', ped, actor(), { priority: true });
+    const witness = this.game.peds.list.find((q) => q !== ped && q.state !== 'down' && Math.hypot(q.x - ped.x, q.z - ped.z) < 20);
+    if (witness) setTimeout(() => Speech.say('witness', witness, actor()), 1200);
     this.police.crime(1, ped.x, ped.z);
     this.game.peds.scare(ped.x, ped.z, 25);
     Feel.buzz(50);
@@ -248,34 +265,20 @@ class OpenWorld {
   // ---------- Jobs ----------
   startJob(spot) {
     const g = this.game, w = g.world, me = g.player;
-    const far = (minD, maxD) => {
-      let best = null;
-      for (let k = 0; k < 200; k++) {
-        const p = w.randomLanePoint();
-        const d = Math.abs(p.x - me.x) + Math.abs(p.z - me.z);
-        if (d >= minD && d <= maxD) return p;
-        if (!best || Math.abs(d - minD) < Math.abs(Math.abs(best.x - me.x) + Math.abs(best.z - me.z) - minD)) best = p;
-      }
-      return best;
-    };
+    const far = (minD, maxD) => w.lanePointAround(me.x, me.z, minD, maxD);
     const job = { type: spot.type, spot, elapsed: 0, startDamage: me.damage, chain: 0 };
     if (spot.type === 'race') {
       job.points = [];
       let from = { x: me.x, z: me.z };
       for (let k = 0; k < 5; k++) {
-        let p = null;
-        for (let t = 0; t < 100; t++) {
-          const q = w.randomLanePoint(), d = Math.abs(q.x - from.x) + Math.abs(q.z - from.z);
-          if (d > 110 && d < 190) { p = q; break; }
-        }
-        p = p || w.randomLanePoint();
+        const p = w.lanePointAround(from.x, from.z, 110, 190);
         job.points.push(p);
         from = p;
       }
       job.cp = 0;
       job.timeLimit = job.points.reduce((s, p, k) => s + Math.abs(p.x - (k ? job.points[k - 1].x : me.x)) + Math.abs(p.z - (k ? job.points[k - 1].z : me.z)), 0) / 13 + 12;
     } else {
-      const d = spot.type === 'taxi' ? far(180, 380) : far(250, 450);
+      const d = spot.type === 'taxi' ? far(160, 340) : far(220, 420);
       job.dest = d;
       const dist = Math.abs(d.x - me.x) + Math.abs(d.z - me.z);
       job.dist = dist;
@@ -286,6 +289,7 @@ class OpenWorld {
     Sound.chime(true);
     const intro = { taxi: 'Passenger picked up. Drive them to the green marker.', delivery: 'Package loaded. It is fragile: crash too hard and it breaks.', race: 'Race! Drive through all 5 checkpoints before time runs out.' };
     g.toast(intro[spot.type], 'good');
+    if (spot.type === 'taxi') Speech.say('fareStart', g.player, g.player, { height: 3 });
   }
 
   showJobMarker() {
@@ -336,12 +340,10 @@ class OpenWorld {
       if (j.type === 'taxi') {
         const fare = Math.round(30 + j.dist * 0.16 + tip + j.chain * 15);
         addCash(fare, `Fare paid${tip ? ` with a ${money(tip)} tip` : ''}`);
+        Speech.say('fareEnd', p, p, { height: 3 });
         // Next passenger straight away.
         j.chain++;
-        const n = this.game.world;
-        let dest = null;
-        for (let k = 0; k < 200 && !dest; k++) { const q = n.randomLanePoint(); const dd = Math.abs(q.x - p.x) + Math.abs(q.z - p.z); if (dd > 160 && dd < 360) dest = q; }
-        j.dest = dest || n.randomLanePoint();
+        j.dest = this.game.world.lanePointAround(p.x, p.z, 160, 340);
         j.dist = Math.abs(j.dest.x - p.x) + Math.abs(j.dest.z - p.z);
         j.timeLimit = j.dist / 9 + 25;
         j.elapsed = 0;
@@ -353,6 +355,121 @@ class OpenWorld {
       }
     }
   }
+
+  // ---------- The local train ----------
+  nearStation() {
+    const w = this.game.walker;
+    return Rail.stations.find((st) => Math.hypot(st.entrance.x - w.x, st.entrance.z - w.z) < 5);
+  }
+
+  openTrainPanel(st) {
+    this.panelStation = st;
+    setText($('train-station'), `${st.name} · ${st.marathi}`);
+    show('train-panel', true);
+    this.game.menuOpen = true;
+    this.renderTrainPanel();
+  }
+
+  renderTrainPanel() {
+    const st = this.panelStation;
+    if (!st) return;
+    for (const dir of ['up', 'down']) {
+      const btn = $(`btn-train-${dir}`);
+      const ok = dir === 'up' ? st.i > 0 : st.i < Rail.stations.length - 1;
+      btn.hidden = !ok;
+      if (ok) {
+        const a = Rail.nextArrival(st.i, dir, this.game.t);
+        setText(btn.querySelector('.eta'), a.eta < 1 ? 'At the platform now' : `Next train in ${fmtTime(a.eta)}`);
+      }
+    }
+  }
+
+  closeTrainPanel() {
+    if (!$('train-panel').hidden) { show('train-panel', false); this.game.menuOpen = false; }
+    this.panelStation = null;
+  }
+
+  // Go up to the platform for trains towards Churchgate ('up') or Dahanu Road ('down').
+  waitFor(dir) {
+    const st = this.panelStation, w = this.game.walker;
+    this.closeTrainPanel();
+    const p = st.platform[dir];
+    w.x = p.x; w.z = p.z; w.y = Rail.FLOOR;
+    w.h = dir === 'down' ? Math.PI / 2 : -Math.PI / 2;
+    w.speed = 0;
+    w.pose();
+    this.rail = { stage: 'wait', station: st.i, dir, getOff: -1 };
+    this.game.toast(`Platform for trains to ${dir === 'down' ? 'Dahanu Road' : 'Churchgate'}`);
+  }
+
+  leavePlatform() {
+    this.alight(Rail.stations[this.rail.station], true);
+  }
+
+  alight(st, quiet = false) {
+    const w = this.game.walker, health = w.health;
+    this.rail = null;
+    w.reset(st.entrance.x, st.entrance.z, Math.PI / 2);
+    w.health = health;
+    if (!quiet) this.game.toast(`You got off at ${st.name} · ${st.marathi}`, 'good');
+  }
+
+  updateRail() {
+    const r = this.rail, w = this.game.walker, t = this.game.t;
+    if (r.stage === 'wait') {
+      for (let k = 0; k < Rail.trains(); k++) {
+        const s = Rail.state(k, t);
+        if (s.dwell === r.station && s.dir === r.dir && s.left > 1.5) {
+          Object.assign(r, { stage: 'ride', k, dwelling: true });
+          this.game.toast('All aboard! Hold on at the door.', 'good');
+          Feel.buzz(30);
+          break;
+        }
+      }
+      w.pose();
+      return;
+    }
+    const spot = Rail.riderSpot(r.k, t), s = spot.state;
+    w.x = spot.x; w.z = spot.z; w.y = spot.y; w.h = spot.h; w.speed = 0; w.v = s.v;
+    w.pose();
+    if (cam.manual <= 0) cam.yaw = (s.dir === 'down' ? Math.PI : 0) + (s.dir === 'down' ? 0.55 : -0.55);
+    if (s.dwell >= 0) {
+      if (!r.dwelling) {
+        r.dwelling = true;
+        const st = Rail.stations[s.dwell];
+        this.game.toast(`${st.name} · ${st.marathi}`);
+      }
+      // Off at the chosen stop, or at the end of the line where the train turns round.
+      if (r.getOff === s.dwell || s.dir !== r.dir) this.alight(Rail.stations[s.dwell]);
+    } else if (r.dwelling) {
+      r.dwelling = false;
+      const nx = Rail.stations[s.next];
+      Speech.announce(`पुढील स्थानक ${nx.marathi}`);
+      this.game.toast(`Next station: ${nx.name} · पुढील स्थानक: ${nx.marathi}`);
+    }
+  }
+
+  // What the context button does right now: get in or out, take the train, get off.
+  context() {
+    const g = this.game;
+    if (this.respawn > 0) return null;
+    if (this.rail) {
+      if (this.rail.stage === 'wait') return { label: 'Leave the platform', run: () => this.leavePlatform() };
+      const s = Rail.state(this.rail.k, g.t);
+      if (s.dwell >= 0) return { label: 'Get off here', run: () => this.alight(Rail.stations[s.dwell]) };
+      if (this.rail.getOff === s.next) return { label: `Getting off at ${Rail.stations[s.next].name} ✓`, run: () => { this.rail.getOff = -1; } };
+      return { label: `Get off at ${Rail.stations[s.next].name}`, run: () => { this.rail.getOff = s.next; } };
+    }
+    if (g.avatar === 'car') return Math.abs(g.player.v) <= 6 ? { label: 'Get out', run: () => this.exitCar() } : null;
+    const st = this.nearStation();
+    if (st) return { label: 'Take the local', run: () => this.openTrainPanel(st) };
+    const near = this.enterable()[0];
+    if (!near) return null;
+    return { label: near.kind === 'parked' ? 'Get in' : near.kind === 'police' || near.c.isPolice ? 'Steal police car' : 'Take car', run: () => this.enterNearest() };
+  }
+
+  // On a platform or a train, the train moves you, not the controls.
+  controlsPlayer() { return !!this.rail; }
 
   // ---------- Every frame ----------
   frozen() { return this.respawn > 0; }
@@ -370,12 +487,33 @@ class OpenWorld {
       return null;
     }
 
-    const target = { x: me.x, z: me.z, h: me.h, v: me.v, inCar };
+    if (this.rail) this.updateRail();
+    if (this.panelStation && Math.floor(this.elapsed * 2) !== Math.floor((this.elapsed - dt) * 2)) this.renderTrainPanel();
+    // Up on the railway the police can't reach you, and they lose sight of you.
+    const target = { x: me.x, z: me.z, h: me.h, v: me.v, inCar, hidden: !!this.rail };
     const others = g.traffic.cars.concat(this.statics, [inCar ? g.player : g.walker], MP.obstacles());
     if (this.police.update(dt, target, others) === 'busted') this.down('BUSTED', 'police', 'The police caught you.');
     Sound.setSiren(clamp(1 - this.police.nearestDistance(me.x, me.z) / 130, 0, 1));
 
     if (!inCar && g.walker.health <= 0) this.down('WASTED', 'hospital', 'You were run over.');
+
+    // Mumbaikars chat as you walk past; police shout when they're close.
+    this.chatTimer -= dt;
+    if (!inCar && !this.rail && this.chatTimer <= 0) {
+      this.chatTimer = 5 + Math.random() * 6;
+      let best = null, bd = 8;
+      for (const p of g.peds.list) {
+        if (p.state !== 'walk') continue;
+        const d = Math.hypot(p.x - me.x, p.z - me.z);
+        if (d < bd) { bd = d; best = p; }
+      }
+      if (best) Speech.say('chat', best, me);
+    }
+    this.shoutTimer -= dt;
+    if (this.police.level > 0 && this.shoutTimer <= 0) {
+      const cop = this.police.cars.find((c) => !c.wrecked && Math.hypot(c.x - me.x, c.z - me.z) < 30);
+      if (cop) { Speech.say('police', cop, me, { height: 2.6 }); this.shoutTimer = 7; }
+    }
 
     // Job markers start jobs when you drive into them.
     if (this.job) this.updateJob(dt);
@@ -436,8 +574,17 @@ class OpenWorld {
       if (j.type === 'race') return `Checkpoint ${j.cp + 1} of ${j.points.length} · ${left}`;
       return `${j.type === 'taxi' ? `Fare ${j.chain + 1}` : 'Delivery'}: green marker · ${left}`;
     }
+    if (this.rail) {
+      const s = Rail.state(this.rail.k || 0, this.game.t);
+      if (this.rail.stage === 'wait') {
+        const a = Rail.nextArrival(this.rail.station, this.rail.dir, this.game.t);
+        return `Waiting for the local · ${a.eta < 1 ? 'arriving' : fmtTime(a.eta)}`;
+      }
+      const nx = Rail.stations[s.dwell >= 0 ? s.dwell : s.next];
+      return `Local to ${s.dir === 'down' ? 'Dahanu Road' : 'Churchgate'} · ${s.dwell >= 0 ? 'at' : 'next'} ${nx.name}`;
+    }
     if (this.police.level) return this.police.searching ? 'Stay out of sight to lose the police' : 'Escape the police!';
-    if (this.game.avatar === 'foot') return 'Walk up to any car and tap Enter';
+    if (this.game.avatar === 'foot') return this.nearStation() ? 'Tap Take the local to ride the train' : 'Walk up to any car, or a station (L)';
     return 'Drive into a T, D or R marker for work';
   }
 
@@ -447,6 +594,7 @@ class OpenWorld {
     const out = [];
     if (!this.job) this.game.world.jobSpots.forEach((s) => out.push({ x: s.x, z: s.z, kind: s.type }));
     for (const lm of this.game.world.landmarks) out.push({ x: lm.x, z: lm.z, kind: lm.type });
+    for (const st of Rail.stations) out.push({ x: st.entrance.x, z: st.entrance.z, kind: 'station', label: st.name });
     if (this.goal) out.push({ x: this.goal.x, z: this.goal.z, kind: 'goal' });
     for (const c of this.police.cars) out.push({ x: c.x, z: c.z, kind: 'cop' });
     return out;

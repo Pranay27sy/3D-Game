@@ -1,23 +1,31 @@
 'use strict';
 
-// City layout: an N x N grid of blocks separated by two-way roads, one lane
-// each way. Traffic drives on the right. One world unit is one metre.
+// The world: Mumbai and the Western line corridor (map data in mumbai.js),
+// on a grid of 60 m blocks and 12 m roads. One world unit is one metre.
+// India drives on the left, and so does everything here.
 const CITY = (() => {
-  const N = 7, BLOCK = 60, ROAD = 12;
-  return { N, BLOCK, ROAD, HALF: ROAD / 2, LANE: 3, PITCH: BLOCK + ROAD, SIZE: N * (BLOCK + ROAD), CURB: 0.3 };
+  const BLOCK = 60, ROAD = 12, PITCH = BLOCK + ROAD;
+  return {
+    NX: MUMBAI.NX, NZ: MUMBAI.NZ, BLOCK, ROAD, HALF: ROAD / 2, LANE: 3, PITCH, CURB: 0.3,
+    SIZE_X: MUMBAI.NX * PITCH, SIZE_Z: MUMBAI.NZ * PITCH,
+  };
 })();
-const CITY_NAME = 'Port Sundale';
+const CITY_NAME = 'Mumbai';
+const DRIVE_LEFT = true;
+const CHUNK_ROWS = 8;
 
 // Directions: 0 = +x (east), 1 = +z (south), 2 = -x (west), 3 = -z (north).
 const DIRS = [{ x: 1, z: 0 }, { x: 0, z: 1 }, { x: -1, z: 0 }, { x: 0, z: -1 }];
 const axisOf = (d) => d % 2;
 const reverseDir = (d) => (d + 2) % 4;
 const rightOf = (d) => ({ x: -DIRS[d].z, z: DIRS[d].x });
+// The side of the road traffic keeps to, seen from a car heading in direction d.
+const laneSide = (d) => { const r = rightOf(d); return DRIVE_LEFT ? { x: -r.x, z: -r.z } : r; };
+// The turn that crosses oncoming traffic (right in India, left in right-hand countries).
+const crossingTurn = (d) => (DRIVE_LEFT ? (d + 1) % 4 : (d + 3) % 4);
 const headingOf = (d) => Math.atan2(DIRS[d].x, DIRS[d].z);
 
-// Distance from a junction centre to the stop line on each approach.
 const STOP_LINE = CITY.HALF + 4;
-// People walk this far inside the curb.
 const SIDEWALK_INSET = 2.8;
 
 function clamp(v, a, b) { return v < a ? a : v > b ? b : v; }
@@ -32,10 +40,11 @@ function mulberry32(seed) {
   };
 }
 
-// Each junction alternates green between its two axes:
-// 8 s green, 2.5 s yellow, 0.5 s all-red, then the other axis.
+// Junctions with signals alternate green between their two axes:
+// 8 s green, 2.5 s yellow, 0.5 s all-red. Junctions without signals are always green.
 const LIGHT_CYCLE = 22;
 function lightState(node, axis, t) {
+  if (!node.signal) return 'green';
   const p = (((t + node.offset) % LIGHT_CYCLE) + LIGHT_CYCLE) % LIGHT_CYCLE;
   const half = LIGHT_CYCLE / 2;
   const active = p < half ? 0 : 1;
@@ -46,30 +55,13 @@ function lightState(node, axis, t) {
   return 'red';
 }
 
-// Districts. Special blocks first, then rings around the centre.
-const SPECIAL_BLOCKS = { '1,2': 'park', '5,4': 'park', '3,3': 'plaza', '5,0': 'stunts', '1,5': 'parking' };
-const OPEN_DISTRICTS = new Set(['stunts', 'parking']);
-const DISTRICT_NAMES = {
-  downtown: 'Downtown', commercial: 'Midtown', residential: 'Harbor Heights', industrial: 'Dockside',
-  park: 'Park', plaza: 'Sundale Square', stunts: 'Stunt Yard', parking: 'Parking Lot',
-};
-function districtOf(bi, bj) {
-  const s = SPECIAL_BLOCKS[`${bi},${bj}`];
-  if (s) return s;
-  if (bj === 0) return 'industrial';
-  const ring = Math.max(Math.abs(bi - 3), Math.abs(bj - 3));
-  if (ring <= 1) return 'downtown';
-  if (ring === 2) return 'commercial';
-  return 'residential';
-}
-
-// Landmarks sit on one side of a block; their door is in the lane next to it.
-const LANDMARKS = [
-  { type: 'police', name: 'Police Station', block: [4, 2], side: 0, color: 0x2a4f8f, sign: 'POLICE', signBg: '#1d3f7a' },
-  { type: 'hospital', name: 'Hospital', block: [2, 4], side: 2, color: 0xeef0ee, sign: '✚ HOSPITAL', signBg: '#c8262c' },
-  { type: 'spray', name: 'Spray & Repair', block: [1, 3], side: 3, color: 0x3a3f46, sign: 'SPRAY & REPAIR', signBg: '#e0901c' },
-  { type: 'spray', name: 'Spray & Repair', block: [5, 2], side: 1, color: 0x3a3f46, sign: 'SPRAY & REPAIR', signBg: '#e0901c' },
-];
+// Blocks with streets and sidewalks around them.
+const STREET_KINDS = new Set(['city', 'mid', 'res', 'dense', 'industrial', 'town', 'park', 'gateway']);
+// Open ground you can drive across.
+const OPEN_KINDS = new Set(['airport', 'beach', 'farm', 'stunts', 'parking']);
+// No cars: sea, forest and hills.
+const SOLID_KINDS = new Set(['water', 'forest', 'wild']);
+const GROUND_COLORS = { airport: 0x6b6f74, beach: 0xe6d3a0, farm: 0x7fa04e, stunts: 0xd9d4c8, parking: 0x3f4449, forest: 0x3f6f35, wild: 0x6f8048 };
 
 function canvasTexture(size, draw) {
   const c = document.createElement('canvas');
@@ -88,16 +80,16 @@ function textTexture(text, bg, fg = '#ffffff', w = 512, h = 128) {
   g.fillStyle = bg;
   g.fillRect(0, 0, w, h);
   g.fillStyle = fg;
-  g.font = `900 ${Math.round(h * 0.55)}px Overpass, Arial, sans-serif`;
+  g.font = `900 ${Math.round(h * 0.55)}px Overpass, "Noto Sans Devanagari", Arial, sans-serif`;
   g.textAlign = 'center';
   g.textBaseline = 'middle';
   g.fillText(text, w / 2, h / 2 + 4, w - 24);
   return new THREE.CanvasTexture(c);
 }
 
-// Collects flat-shaded triangles with vertex colours and UVs into one mesh, so
-// the whole skyline costs a single draw call. Each face is turned to point away
-// from a reference point inside its solid, so winding never has to be hand-checked.
+// Collects flat-shaded triangles with vertex colours and UVs into one mesh.
+// Each face is turned to point away from a reference point inside its solid,
+// so winding never has to be hand-checked.
 class GeoBatch {
   constructor() { this.p = []; this.n = []; this.uv = []; this.c = []; }
 
@@ -158,11 +150,14 @@ class GeoBatch {
     }
   }
 
-  // Flat horizontal rectangle (lawns, plazas, sand).
-  flat(x0, z0, x1, z1, y, color) {
-    const c = new THREE.Color(color), uv = [[0, 0], [0, 0], [0, 0], [0, 0]];
+  // Flat horizontal rectangle; uvScale > 0 maps a tiling texture in world space.
+  flat(x0, z0, x1, z1, y, color, uvScale = 0) {
+    const c = new THREE.Color(color);
+    const uv = uvScale ? [[x0 * uvScale, z0 * uvScale], [x0 * uvScale, z1 * uvScale], [x1 * uvScale, z1 * uvScale], [x1 * uvScale, z0 * uvScale]] : [[0, 0], [0, 0], [0, 0], [0, 0]];
     this.quad([x0, y, z0], [x0, y, z1], [x1, y, z1], [x1, y, z0], c, uv, [(x0 + x1) / 2, y - 1, (z0 + z1) / 2]);
   }
+
+  get empty() { return this.p.length === 0; }
 
   mesh(material) {
     const g = new THREE.BufferGeometry();
@@ -174,124 +169,256 @@ class GeoBatch {
   }
 }
 
+// Instance lists that become one InstancedMesh per chunk.
+class InstanceList {
+  constructor() { this.items = []; }
+  add(x, y, z, sx = 1, sy = 1, sz = 1, color = null, rotY = 0) { this.items.push([x, y, z, sx, sy, sz, color, rotY]); }
+  mesh(geo, mat) {
+    if (!this.items.length) return null;
+    const mesh = new THREE.InstancedMesh(geo, mat, this.items.length);
+    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(), up = new THREE.Vector3(0, 1, 0);
+    this.items.forEach(([x, y, z, sx, sy, sz, color, rotY], k) => {
+      q.setFromAxisAngle(up, rotY);
+      mesh.setMatrixAt(k, m.compose(p.set(x, y, z), q, s.set(sx, sy, sz)));
+      if (color !== null) mesh.setColorAt(k, new THREE.Color(color));
+    });
+    return mesh;
+  }
+}
+
+// Solid rectangles bucketed by grid cell, for quick lookups near a point.
+class SolidGrid {
+  constructor() { this.cells = new Map(); }
+  add(r) {
+    const P = CITY.PITCH;
+    const i0 = Math.floor(r.x0 / P), i1 = Math.floor(r.x1 / P), j0 = Math.floor(r.z0 / P), j1 = Math.floor(r.z1 / P);
+    for (let j = j0; j <= j1; j++)
+      for (let i = i0; i <= i1; i++) {
+        const key = i * 1000 + j;
+        if (!this.cells.has(key)) this.cells.set(key, []);
+        this.cells.get(key).push(r);
+      }
+  }
+  near(x, z, out) {
+    const P = CITY.PITCH, ci = Math.floor(x / P), cj = Math.floor(z / P);
+    for (let j = cj - 1; j <= cj + 1; j++)
+      for (let i = ci - 1; i <= ci + 1; i++) {
+        const list = this.cells.get(i * 1000 + j);
+        if (list) for (const r of list) out.push(r);
+      }
+    return out;
+  }
+}
+
 class World {
   constructor(scene) {
     this.scene = scene;
     const rng = (this.rng = mulberry32(20261020));
-    const { N, PITCH } = CITY;
-    this.nodes = [];
-    for (let j = 0; j <= N; j++)
-      for (let i = 0; i <= N; i++)
-        this.nodes.push({ i, j, x: i * PITCH, z: j * PITCH, offset: rng() * LIGHT_CYCLE });
+    const { NX, NZ, PITCH, HALF } = CITY;
+    this.kind = (bi, bj) => (bi < 0 || bj < 0 || bi >= NX || bj >= NZ ? 'water' : MUMBAI.T[bj][bi]);
 
-    const H = CITY.HALF, S = CITY.SIZE, FAR = 1e4;
+    this.nodes = [];
+    for (let j = 0; j <= NZ; j++)
+      for (let i = 0; i <= NX; i++)
+        this.nodes.push({ i, j, x: i * PITCH, z: j * PITCH, offset: rng() * LIGHT_CYCLE, roads: 0, signal: false });
+
+    // Which road segments exist: any segment beside a street block, plus the bridges and highway.
+    this.roadSet = new Set();
+    this.bridges = new Set();
+    for (let j = 0; j <= NZ; j++)
+      for (let i = 0; i < NX; i++)
+        if (STREET_KINDS.has(this.kind(i, j - 1)) || STREET_KINDS.has(this.kind(i, j))) this.roadSet.add(`h${i},${j}`);
+    for (let j = 0; j < NZ; j++)
+      for (let i = 0; i <= NX; i++)
+        if (STREET_KINDS.has(this.kind(i - 1, j)) || STREET_KINDS.has(this.kind(i, j))) this.roadSet.add(`v${i},${j}`);
+    for (const [i, j0, j1] of MUMBAI.extraRoads) for (let j = j0; j <= j1; j++) this.roadSet.add(`v${i},${j}`);
+    for (const key of this.roadSet) {
+      const [i, j] = key.slice(1).split(',').map(Number);
+      const water = key[0] === 'h' ? this.kind(i, j - 1) === 'water' && this.kind(i, j) === 'water' : this.kind(i - 1, j) === 'water' && this.kind(i, j) === 'water';
+      if (water) this.bridges.add(key);
+    }
+    // Directed lane segments, for picking places to put cars.
+    this.segments = [];
+    for (const n of this.nodes)
+      for (let d = 0; d < 4; d++) if (this.hasRoad(n.i, n.j, d)) { n.roads++; this.segments.push({ i: n.i, j: n.j, d, mx: n.x + DIRS[d].x * PITCH / 2, mz: n.z + DIRS[d].z * PITCH / 2 }); }
+    for (const n of this.nodes) n.signal = n.roads >= 3;
+
     this.bounds = [
-      { x0: -FAR, x1: -H, z0: -FAR, z1: FAR },
-      { x0: S + H, x1: FAR, z0: -FAR, z1: FAR },
-      { x0: -FAR, x1: FAR, z0: -FAR, z1: -H },
-      { x0: -FAR, x1: FAR, z0: S + H, z1: FAR },
+      { x0: -1e4, x1: -HALF, z0: -1e4, z1: 1e4 }, { x0: CITY.SIZE_X + HALF, x1: 1e4, z0: -1e4, z1: 1e4 },
+      { x0: -1e4, x1: 1e4, z0: -1e4, z1: -HALF }, { x0: -1e4, x1: 1e4, z0: CITY.SIZE_Z + HALF, z1: 1e4 },
     ];
-    this.blocks = [];        // curb rectangle cars can't cross; null for open blocks
-    this.info = [];          // { bi, bj, x0, z0, x1, z1, district }
-    this.buildingRects = []; // per block: footprints people on foot can't walk through
-    this.extraRects = [];    // per block: solid props in open blocks
+    this.carSolid = new SolidGrid();
+    this.footSolid = new SolidGrid();
+    this.buildingSolid = new SolidGrid();
+    this.curbSolid = new SolidGrid();
+    this.blocks = [];        // curb rectangle per street block (null otherwise)
+    this.info = [];          // { bi, bj, x0, z0, x1, z1, kind, district }
+    this.buildingRects = []; // per block, for people on foot
     this.ramps = [];
     this.parkingSpots = [];
     this.landmarks = [];
     this.jobSpots = [];
     this.packages = [];
     this.poles = [];
-    this.lampHeads = null;
-    this.nightMats = [];
-    // Missions treat curbs as walls; the open world lets cars mount the sidewalk.
+    this.chunks = [];
     this.curbsSolid = true;
+    for (let j = 0; j < NZ; j++)
+      for (let i = 0; i < NX; i++) {
+        const x0 = i * PITCH + HALF, z0 = j * PITCH + HALF, kind = this.kind(i, j);
+        this.info.push({ bi: i, bj: j, x0, z0, x1: x0 + CITY.BLOCK, z1: z0 + CITY.BLOCK, kind, district: kind });
+        this.buildingRects.push([]);
+        const curb = STREET_KINDS.has(kind) ? { x0, x1: x0 + CITY.BLOCK, z0, z1: z0 + CITY.BLOCK } : null;
+        this.blocks.push(curb);
+        if (curb) this.curbSolid.add(curb);
+      }
+    this.sidewalkBlocks = this.info.map((b, k) => k).filter((k) => this.blocks[k]);
 
-    this.buildGround();
-    this.buildBlocks();
-    this.buildMarkings();
-    this.buildLights();
-    this.buildStreetLamps();
-    this.buildBarriers();
-    this.buildBeach();
+    this.buildMaterials();
+    this.buildSolids();
+    for (let c = 0; c * CHUNK_ROWS < NZ; c++) this.buildChunk(c);
+    this.buildSea();
     this.placeJobsAndPackages();
+    const h = MUMBAI.home;
+    this.home = this.lanePoint(h.i, h.j, 1, PITCH / 2);
   }
 
-  node(i, j) { return this.nodes[i + j * (CITY.N + 1)]; }
+  // ---------- Queries ----------
+  node(i, j) { return this.nodes[i + j * (CITY.NX + 1)]; }
 
   hasRoad(i, j, d) {
-    const ni = i + DIRS[d].x, nj = j + DIRS[d].z;
-    return ni >= 0 && nj >= 0 && ni <= CITY.N && nj <= CITY.N;
+    if (d === 0) return this.roadSet.has(`h${i},${j}`);
+    if (d === 2) return this.roadSet.has(`h${i - 1},${j}`);
+    if (d === 1) return this.roadSet.has(`v${i},${j}`);
+    return this.roadSet.has(`v${i},${j - 1}`);
   }
 
   lanePoint(i, j, d, s) {
-    const n = this.node(i, j), D = DIRS[d], r = rightOf(d);
+    const n = this.node(i, j), D = DIRS[d], r = laneSide(d);
     return { i, j, d, s, x: n.x + D.x * s + r.x * CITY.LANE, z: n.z + D.z * s + r.z * CITY.LANE, h: headingOf(d) };
   }
 
   randomLanePoint(rand = Math.random) {
-    for (;;) {
-      const i = Math.floor(rand() * (CITY.N + 1)), j = Math.floor(rand() * (CITY.N + 1)), d = Math.floor(rand() * 4);
-      if (!this.hasRoad(i, j, d)) continue;
-      return this.lanePoint(i, j, d, CITY.HALF + 12 + rand() * (CITY.BLOCK - 26));
-    }
+    const sg = this.segments[Math.floor(rand() * this.segments.length)];
+    return this.lanePoint(sg.i, sg.j, sg.d, CITY.HALF + 12 + rand() * (CITY.BLOCK - 26));
   }
 
-  // The lane point nearest to (x, z): useful for respawning and for placing markers.
-  nearestLanePoint(x, z) {
-    const { PITCH, HALF, BLOCK, N } = CITY;
-    const ri = clamp(Math.round(x / PITCH), 0, N), rj = clamp(Math.round(z / PITCH), 0, N);
-    const dx = Math.abs(x - ri * PITCH), dz = Math.abs(z - rj * PITCH);
-    let i, j, d, s;
-    if (dz <= dx) { // on (or nearer to) an east-west road at z = rj * PITCH
-      j = rj; i = clamp(Math.floor(x / PITCH), 0, N - 1); s = clamp(x - i * PITCH, HALF + 2, PITCH - HALF - 2);
-      d = z >= rj * PITCH ? 0 : 2;
-      if (d === 2) { i += 1; s = PITCH - s; }
-    } else {
-      i = ri; j = clamp(Math.floor(z / PITCH), 0, N - 1); s = clamp(z - j * PITCH, HALF + 2, PITCH - HALF - 2);
-      d = x <= ri * PITCH ? 1 : 3;
-      if (d === 3) { j += 1; s = PITCH - s; }
+  // A random lane point between minD and maxD metres from (x, z).
+  lanePointAround(x, z, minD = 0, maxD = 200) {
+    const pick = [];
+    let best = null, bestErr = Infinity;
+    for (const sg of this.segments) {
+      const d = Math.hypot(sg.mx - x, sg.mz - z);
+      if (d >= minD && d <= maxD) pick.push(sg);
+      else { const err = d < minD ? minD - d : d - maxD; if (err < bestErr) { bestErr = err; best = sg; } }
     }
-    if (!this.hasRoad(i, j, d)) return this.randomLanePoint();
-    return this.lanePoint(i, j, d, clamp(s, HALF + 2, HALF + BLOCK - 2));
+    const sg = pick.length ? pick[Math.floor(Math.random() * pick.length)] : best;
+    return this.lanePoint(sg.i, sg.j, sg.d, CITY.HALF + 12 + Math.random() * (CITY.BLOCK - 26));
+  }
+
+  nearestLanePoint(x, z) {
+    let best = null, bd = Infinity;
+    for (const sg of this.segments) {
+      const d = Math.hypot(sg.mx - x, sg.mz - z);
+      if (d < bd) { bd = d; best = sg; }
+    }
+    const n = this.node(best.i, best.j), D = DIRS[best.d];
+    const s = clamp((x - n.x) * D.x + (z - n.z) * D.z, CITY.HALF + 2, CITY.PITCH - CITY.HALF - 2);
+    return this.lanePoint(best.i, best.j, best.d, s);
+  }
+
+  // The next junction on the shortest road route from (si, sj) to (ti, tj).
+  nextNodeTowards(si, sj, ti, tj) {
+    const W = CITY.NX + 1, start = si + sj * W, goal = ti + tj * W;
+    if (start === goal) return null;
+    const prev = new Map([[goal, -1]]), queue = [goal];
+    // Search back from the goal so the first step from the start falls out directly.
+    while (queue.length) {
+      const k = queue.shift(), i = k % W, j = Math.floor(k / W);
+      for (let d = 0; d < 4; d++) {
+        if (!this.hasRoad(i, j, d)) continue;
+        const n = i + DIRS[d].x + (j + DIRS[d].z) * W;
+        if (prev.has(n)) continue;
+        prev.set(n, k);
+        if (n === start) return { i: k % W, j: Math.floor(k / W) };
+        queue.push(n);
+      }
+    }
+    return null;
+  }
+
+  // The junctions along the shortest road route from one junction to another.
+  route(si, sj, ti, tj, max = 400) {
+    const W = CITY.NX + 1, start = si + sj * W, goal = ti + tj * W;
+    const prev = new Map([[goal, -1]]), queue = [goal];
+    while (queue.length && !prev.has(start)) {
+      const k = queue.shift(), i = k % W, j = Math.floor(k / W);
+      for (let d = 0; d < 4; d++) {
+        if (!this.hasRoad(i, j, d)) continue;
+        const n = i + DIRS[d].x + (j + DIRS[d].z) * W;
+        if (!prev.has(n)) { prev.set(n, k); queue.push(n); }
+      }
+    }
+    if (!prev.has(start)) return [];
+    const out = [];
+    for (let k = start; k !== -1 && out.length < max; k = prev.get(k)) out.push(this.nodes[k]);
+    return out;
+  }
+
+  nearestNode(x, z) {
+    const { PITCH, NX, NZ } = CITY;
+    let best = null, bd = Infinity;
+    const ci = Math.round(x / PITCH), cj = Math.round(z / PITCH);
+    for (let j = cj - 2; j <= cj + 2; j++)
+      for (let i = ci - 2; i <= ci + 2; i++) {
+        if (i < 0 || j < 0 || i > NX || j > NZ) continue;
+        const n = this.node(i, j);
+        if (!n.roads) continue;
+        const d = Math.hypot(n.x - x, n.z - z);
+        if (d < bd) { bd = d; best = n; }
+      }
+    return best;
   }
 
   blockIndexAt(x, z) {
-    const { N, PITCH } = CITY;
+    const { NX, NZ, PITCH } = CITY;
     const bi = Math.floor(x / PITCH), bj = Math.floor(z / PITCH);
-    if (bi < 0 || bj < 0 || bi >= N || bj >= N) return -1;
-    const b = this.info[bi + bj * N];
-    return x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1 ? bi + bj * N : -1;
+    if (bi < 0 || bj < 0 || bi >= NX || bj >= NZ) return -1;
+    const b = this.info[bi + bj * NX];
+    return x >= b.x0 && x <= b.x1 && z >= b.z0 && z <= b.z1 ? bi + bj * NX : -1;
   }
 
   nearBlocks(x, z, r, fn) {
-    const { N, PITCH } = CITY;
-    const i0 = clamp(Math.floor((x - r) / PITCH), 0, N - 1), i1 = clamp(Math.floor((x + r) / PITCH), 0, N - 1);
-    const j0 = clamp(Math.floor((z - r) / PITCH), 0, N - 1), j1 = clamp(Math.floor((z + r) / PITCH), 0, N - 1);
-    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) fn(i + j * N);
+    const { NX, NZ, PITCH } = CITY;
+    const i0 = clamp(Math.floor((x - r) / PITCH), 0, NX - 1), i1 = clamp(Math.floor((x + r) / PITCH), 0, NX - 1);
+    const j0 = clamp(Math.floor((z - r) / PITCH), 0, NZ - 1), j1 = clamp(Math.floor((z + r) / PITCH), 0, NZ - 1);
+    for (let j = j0; j <= j1; j++) for (let i = i0; i <= i1; i++) fn(i + j * NX);
   }
 
-  // Solid rectangles for cars near (x, z): curbs, props, the city edge.
+  // Solid rectangles for cars near (x, z).
   rectsNear(x, z) {
     const out = this.bounds.slice();
-    this.nearBlocks(x, z, 4, (k) => {
-      if (this.curbsSolid) { if (this.blocks[k]) out.push(this.blocks[k]); }
-      else for (const r of this.buildingRects[k]) out.push(r);
-      for (const r of this.extraRects[k]) out.push(r);
-    });
+    this.carSolid.near(x, z, out);
+    this.buildingSolid.near(x, z, out);
+    if (this.curbsSolid) this.curbSolid.near(x, z, out);
     return out;
   }
 
-  // Solid rectangles for people on foot: buildings and props, not curbs.
+  // Solid rectangles for people on foot.
   footRectsNear(x, z) {
     const out = this.bounds.slice();
-    this.nearBlocks(x, z, 3, (k) => {
-      for (const r of this.buildingRects[k]) out.push(r);
-      for (const r of this.extraRects[k]) out.push(r);
-    });
+    this.footSolid.near(x, z, out);
+    this.buildingSolid.near(x, z, out);
     return out;
   }
 
-  // Height of the drivable surface: ramps, and sidewalks when cars may mount them.
+  // Buildings only (for keeping the camera out of walls).
+  buildingRectsNear(x, z) { return this.buildingSolid.near(x, z, []); }
+
+  addSolid(r, { cars = true, feet = true } = {}) {
+    if (cars) this.carSolid.add(r);
+    if (feet) this.footSolid.add(r);
+  }
+
   heightAt(x, z) {
     let h = 0;
     if (!this.curbsSolid) { const k = this.blockIndexAt(x, z); if (k >= 0 && this.blocks[k]) h = CITY.CURB; }
@@ -303,7 +430,6 @@ class World {
     return h;
   }
 
-  // Height under someone on foot: sidewalks are a curb step up.
   footGroundAt(x, z) {
     const k = this.blockIndexAt(x, z);
     if (k >= 0 && this.blocks[k]) return CITY.CURB;
@@ -318,19 +444,24 @@ class World {
 
   junctionAt(x, z) {
     const i = Math.round(x / CITY.PITCH), j = Math.round(z / CITY.PITCH);
-    if (i < 0 || j < 0 || i > CITY.N || j > CITY.N) return null;
+    if (i < 0 || j < 0 || i > CITY.NX || j > CITY.NZ) return null;
     const n = this.node(i, j);
-    return Math.abs(x - n.x) < CITY.HALF && Math.abs(z - n.z) < CITY.HALF ? n : null;
+    return n.roads && Math.abs(x - n.x) < CITY.HALF && Math.abs(z - n.z) < CITY.HALF ? n : null;
   }
 
   districtAt(x, z) {
-    const { N, PITCH } = CITY;
-    const bi = clamp(Math.floor(x / PITCH), 0, N - 1), bj = clamp(Math.floor(z / PITCH), 0, N - 1);
-    return this.info[bi + bj * N].district;
+    const { NX, NZ, PITCH } = CITY;
+    return this.kind(clamp(Math.floor(x / PITCH), 0, NX - 1), clamp(Math.floor(z / PITCH), 0, NZ - 1));
+  }
+
+  areaAt(x, z) {
+    const bi = Math.floor(x / CITY.PITCH), bj = Math.floor(z / CITY.PITCH);
+    for (const [name, j0, j1, i0, i1] of MUMBAI.areas) if (bj >= j0 && bj <= j1 && bi >= i0 && bi <= i1) return name;
+    return bj < 0 ? 'Dahanu' : 'Mumbai';
   }
 
   // ---------- Sidewalk loops for pedestrians ----------
-  hasSidewalk(k) { return !!this.blocks[k]; }
+  hasSidewalk(k) { return k >= 0 && !!this.blocks[k]; }
 
   sidewalkPoint(k, p) {
     const b = this.info[k], L = CITY.BLOCK - SIDEWALK_INSET * 2, P = L * 4;
@@ -368,38 +499,7 @@ class World {
   }
 
   // ---------- Building ----------
-  buildGround() {
-    const { SIZE, HALF } = CITY;
-    const grass = new THREE.Mesh(
-      new THREE.PlaneGeometry(3000, 3000).rotateX(-Math.PI / 2),
-      new THREE.MeshStandardMaterial({ color: 0x7fa35a, roughness: 1 })
-    );
-    grass.position.set(SIZE / 2, -0.4, SIZE / 2);
-    grass.receiveShadow = true;
-    this.scene.add(grass);
-
-    const asphaltTex = canvasTexture(128, (g, s) => {
-      g.fillStyle = '#4a4f55';
-      g.fillRect(0, 0, s, s);
-      for (let k = 0; k < 1800; k++) {
-        const v = 60 + Math.floor(Math.random() * 40);
-        g.fillStyle = `rgb(${v},${v + 3},${v + 6})`;
-        g.fillRect(Math.random() * s, Math.random() * s, 1.5, 1.5);
-      }
-    });
-    const span = SIZE + HALF * 2;
-    asphaltTex.repeat.set(span / 8, span / 8);
-    this.roadMat = new THREE.MeshStandardMaterial({ map: asphaltTex, roughness: 0.95, metalness: 0 });
-    const road = new THREE.Mesh(new THREE.PlaneGeometry(span, span).rotateX(-Math.PI / 2), this.roadMat);
-    road.position.set(SIZE / 2, 0, SIZE / 2);
-    road.receiveShadow = true;
-    this.scene.add(road);
-  }
-
-  buildBlocks() {
-    const { N, PITCH, HALF, BLOCK, CURB } = CITY;
-    const rng = this.rng;
-    // Window atlas: 4 x 4 windows. The lit copy decides which windows glow at night.
+  buildMaterials() {
     const atlas = canvasTexture(256, (g) => {
       g.fillStyle = '#ffffff'; g.fillRect(0, 0, 256, 256);
       for (let r = 0; r < 4; r++)
@@ -418,190 +518,341 @@ class World {
         }
     });
     this.buildingMat = new THREE.MeshStandardMaterial({ vertexColors: true, map: atlas, emissiveMap: lit, emissive: 0xffffff, emissiveIntensity: 0, roughness: 0.82, metalness: 0.05 });
-    this.nightMats.push(this.buildingMat);
-    const plainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
+    this.plainMat = new THREE.MeshStandardMaterial({ vertexColors: true, roughness: 0.95 });
+    const asphaltTex = canvasTexture(128, (g, s) => {
+      g.fillStyle = '#4a4f55';
+      g.fillRect(0, 0, s, s);
+      for (let k = 0; k < 1800; k++) {
+        const v = 60 + Math.floor(Math.random() * 40);
+        g.fillStyle = `rgb(${v},${v + 3},${v + 6})`;
+        g.fillRect(Math.random() * s, Math.random() * s, 1.5, 1.5);
+      }
+    });
+    this.roadMat = new THREE.MeshStandardMaterial({ map: asphaltTex, vertexColors: true, roughness: 0.95, metalness: 0 });
+    this.markMat = { white: new THREE.MeshStandardMaterial({ color: 0xeeeeea, roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -2 }), yellow: new THREE.MeshStandardMaterial({ color: 0xf2c230, roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -2 }) };
+    this.markGeo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
+    this.trunkGeo = new THREE.CylinderGeometry(0.18, 0.24, 2.2, 6);
+    this.crownGeo = new THREE.IcosahedronGeometry(1.6, 0);
+    this.trunkMat = new THREE.MeshStandardMaterial({ color: 0x6b4b32, roughness: 1 });
+    this.crownMat = new THREE.MeshStandardMaterial({ color: 0x3f7d3a, roughness: 1, flatShading: true });
+    this.palmLeafGeo = new THREE.ConeGeometry(2.6, 1.2, 7);
+    this.palmTrunkGeo = new THREE.CylinderGeometry(0.16, 0.26, 7, 6);
+    this.palmMat = new THREE.MeshStandardMaterial({ color: 0x3f8f4a, flatShading: true });
+    this.palmTrunkMat = new THREE.MeshStandardMaterial({ color: 0x8a6a45 });
+    this.hillGeo = new THREE.ConeGeometry(1, 1, 7);
+    this.hillMat = new THREE.MeshStandardMaterial({ color: 0x55703c, roughness: 1, flatShading: true });
+    this.poleGeo = new THREE.CylinderGeometry(0.09, 0.11, 4.6, 6);
+    this.poleMat = new THREE.MeshStandardMaterial({ color: 0x3b3f45 });
+    this.headGeo = new THREE.BoxGeometry(0.5, 1.35, 0.5);
+    this.headMat = new THREE.MeshStandardMaterial({ color: 0x23262a });
+    this.lampGeo = new THREE.SphereGeometry(0.17, 6, 4);
+    this.streetPoleGeo = new THREE.CylinderGeometry(0.08, 0.12, 6.2, 6);
+    this.streetPoleMat = new THREE.MeshStandardMaterial({ color: 0x4a4f55 });
+    this.lampHeadGeo = new THREE.BoxGeometry(0.5, 0.18, 0.9);
+    this.lampHeadMat = new THREE.MeshBasicMaterial({ color: 0x8a8f96 });
+    this.containerGeo = new THREE.BoxGeometry(6.1, 2.6, 2.5);
+    this.containerMat = new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8 });
+    this.lampColors = { off: new THREE.Color(0x2a2d31), red: new THREE.Color(0xff3b30), yellow: new THREE.Color(0xffc21a), green: new THREE.Color(0x2ee66b) };
+  }
 
-    const bld = new GeoBatch(), ground = new GeoBatch();
-    const trees = [], containers = [];
+  // Sea, forest and hills stop cars; the sea also stops people. So do the gaps
+  // between such cells where no road runs.
+  buildSolids() {
+    const { NX, NZ, PITCH, HALF, BLOCK } = CITY;
+    const solidFor = (kind) => ({ cars: SOLID_KINDS.has(kind), feet: kind === 'water' });
+    for (const b of this.info) {
+      const s = solidFor(b.kind);
+      if (s.cars || s.feet) this.addSolid({ x0: b.x0, z0: b.z0, x1: b.x1, z1: b.z1 }, s);
+    }
+    const gap = (k1, k2, rect) => {
+      const a = this.kind(...k1), b = this.kind(...k2);
+      const cars = !(OPEN_KINDS.has(a) && OPEN_KINDS.has(b)) && !(STREET_KINDS.has(a) && STREET_KINDS.has(b));
+      const feet = a === 'water' || b === 'water';
+      if (cars || feet) this.addSolid(rect, { cars, feet });
+    };
+    for (let j = 0; j <= NZ; j++)
+      for (let i = 0; i < NX; i++)
+        if (!this.roadSet.has(`h${i},${j}`)) gap([i, j - 1], [i, j], { x0: i * PITCH + HALF, x1: i * PITCH + HALF + BLOCK, z0: j * PITCH - HALF, z1: j * PITCH + HALF });
+    for (let j = 0; j < NZ; j++)
+      for (let i = 0; i <= NX; i++)
+        if (!this.roadSet.has(`v${i},${j}`)) gap([i - 1, j], [i, j], { x0: i * PITCH - HALF, x1: i * PITCH + HALF, z0: j * PITCH + HALF, z1: j * PITCH + HALF + BLOCK });
+    for (const n of this.nodes) {
+      if (n.roads) continue;
+      const around = [this.kind(n.i - 1, n.j - 1), this.kind(n.i, n.j - 1), this.kind(n.i - 1, n.j), this.kind(n.i, n.j)];
+      const cars = !around.every((k) => OPEN_KINDS.has(k));
+      const feet = around.some((k) => k === 'water');
+      if (cars || feet) this.addSolid({ x0: n.x - HALF, x1: n.x + HALF, z0: n.z - HALF, z1: n.z + HALF }, { cars, feet });
+    }
+  }
+
+  buildSea() {
+    const { SIZE_X, SIZE_Z } = CITY;
+    this.waterMat = new THREE.MeshStandardMaterial({ color: 0x2f7fae, roughness: 0.25, metalness: 0.1 });
+    const sea = new THREE.Mesh(new THREE.PlaneGeometry(SIZE_X + 4000, SIZE_Z + 4000).rotateX(-Math.PI / 2), this.waterMat);
+    sea.position.set(SIZE_X / 2, -0.6, SIZE_Z / 2);
+    sea.receiveShadow = true;
+    this.scene.add(sea);
+  }
+
+  buildChunk(c) {
+    const { NX, NZ, PITCH, HALF, BLOCK, CURB } = CITY;
+    const rng = mulberry32(1000 + c);
+    const j0 = c * CHUNK_ROWS, j1 = Math.min(NZ, j0 + CHUNK_ROWS) - 1;
+    const group = new THREE.Group();
+    const chunk = { group, z0: j0 * PITCH - HALF, z1: (j1 + 1) * PITCH + HALF, poles: [], lampMesh: null };
+    this.chunks.push(chunk);
+    this.scene.add(group);
+
+    const bld = new GeoBatch(), ground = new GeoBatch(), roads = new GeoBatch();
+    const trees = new InstanceList(), palms = new InstanceList(), hills = new InstanceList(), containers = new InstanceList();
+    const white = new InstanceList(), yellow = new InstanceList(), lamps = new InstanceList(), lampHeads = new InstanceList();
+    const ctx = { bld, ground, trees, palms, hills, containers, white, rng, group, chunk };
     const pal = {
-      downtown: [0x9fb3c8, 0x7f93a8, 0xc3ccd6, 0x8aa0a8, 0xb7c4cf, 0x6f8193],
-      commercial: [0xd8cfc0, 0xc9a98e, 0xe6dcc8, 0xb08b74, 0xd1b48c, 0xa7b59d],
-      residential: [0xf2e6cf, 0xe8d3c0, 0xdde6ea, 0xf0dcd0, 0xe3e8d2, 0xf5efe0],
-      roofs: [0x8a4b3c, 0x5d6168, 0x7a5a3f, 0x4f5a66],
+      city: [0x9fb3c8, 0x7f93a8, 0xc3ccd6, 0x8aa0a8, 0xb7c4cf, 0x6f8193, 0xa8b8c0],
+      mid: [0xd8cfc0, 0xc9a98e, 0xe6dcc8, 0xb08b74, 0xd1b48c, 0xe0c9a0, 0xcbbca4],
+      res: [0xf0c8c8, 0xf2e2a8, 0xc8dcf0, 0xf2e6cf, 0xd8ecd0, 0xf0d0b0, 0xe8d8f0],
+      town: [0xf2b8a0, 0xa8d8e8, 0xf2dc8c, 0xc8e6a8, 0xf0f0e8, 0xe8a8c0],
+      roofs: [0x8a4b3c, 0x5d6168, 0x7a5a3f, 0xa04a32],
       industrial: [0x9aa1a6, 0x8a8f7c, 0xa69a88, 0x7d8a92],
     };
     const pick = (a) => a[Math.floor(rng() * a.length)];
     const landmarkAt = {};
-    for (const lm of LANDMARKS) landmarkAt[lm.block.join(',')] = lm;
+    for (const [type, name, bi, bj, side] of MUMBAI.landmarks) landmarkAt[`${bi},${bj}`] = { type, name, side };
 
-    for (let bj = 0; bj < N; bj++)
-      for (let bi = 0; bi < N; bi++) {
-        const k = bi + bj * N;
-        const x0 = bi * PITCH + HALF, z0 = bj * PITCH + HALF, x1 = x0 + BLOCK, z1 = z0 + BLOCK;
-        const district = districtOf(bi, bj);
-        this.info.push({ bi, bj, x0, z0, x1, z1, district });
-        this.buildingRects.push([]);
-        this.extraRects.push([]);
-        const rects = this.buildingRects[k], extra = this.extraRects[k];
+    for (let bj = j0; bj <= j1; bj++)
+      for (let bi = 0; bi < NX; bi++) {
+        const k = bi + bj * NX, b = this.info[k], kind = b.kind;
+        const { x0, z0, x1, z1 } = b;
+        const rects = this.buildingRects[k];
         const addBuilding = (bx0, bz0, bx1, bz1, h, color, opts) => {
           bld.box(bx0, CURB, bz0, bx1, CURB + h, bz1, color, opts);
-          rects.push({ x0: bx0, z0: bz0, x1: bx1, z1: bz1 });
+          const r = { x0: bx0, z0: bz0, x1: bx1, z1: bz1 };
+          rects.push(r);
+          this.buildingSolid.add(r);
         };
+        ctx.addBuilding = addBuilding;
 
-        if (OPEN_DISTRICTS.has(district)) {
-          this.blocks.push(null);
-          ground.flat(x0, z0, x1, z1, 0.012, district === 'stunts' ? 0x5c5f63 : 0x3f4449);
-          if (district === 'stunts') this.buildStuntYard(k, x0, z0, extra);
-          else this.buildParkingLot(x0, z0);
+        if (kind === 'water') continue;
+        if (OPEN_KINDS.has(kind)) {
+          ground.flat(x0, z0, x1, z1, 0.012, GROUND_COLORS[kind]);
+          this.buildOpen(kind, b, ctx);
+          continue;
+        }
+        if (kind === 'forest' || kind === 'wild') {
+          ground.box(x0, 0, z0, x1, 0.35, z1, GROUND_COLORS[kind], { plain: true });
+          const n = kind === 'forest' ? 26 : 9;
+          for (let t = 0; t < n; t++) trees.add(x0 + 3 + rng() * (BLOCK - 6), 0.35, z0 + 3 + rng() * (BLOCK - 6), 1.1);
+          const hn = kind === 'wild' ? 2 : 1;
+          for (let t = 0; t < hn; t++) {
+            const hh = 8 + rng() * (kind === 'wild' ? 22 : 10);
+            hills.add(x0 + 12 + rng() * 36, hh / 2 + 0.3, z0 + 12 + rng() * 36, 14 + rng() * 14, hh, 14 + rng() * 14);
+          }
           continue;
         }
 
-        this.blocks.push({ x0, x1, z0, z1 });
-        ground.box(x0, 0, z0, x1, CURB, z1, 0xb8b3a8, { plain: true });
-
-        // Street trees along the sidewalk, clear of the corners.
-        if (district !== 'plaza') {
+        // Street blocks: sidewalk slab, street trees and lamps, then buildings.
+        ground.box(x0, 0, z0, x1, CURB, z1, kind === 'gateway' ? 0xd2c3a3 : 0xb8b3a8, { plain: true });
+        if (kind !== 'dense' && kind !== 'gateway') {
           for (const t of [14, 46]) {
-            trees.push([x0 + t, z0 + 1.2, 0.7], [x0 + t, z1 - 1.2, 0.7], [x0 + 1.2, z0 + t, 0.7], [x1 - 1.2, z0 + t, 0.7]);
+            for (const [tx, tz] of [[x0 + t, z0 + 1.2], [x0 + t, z1 - 1.2], [x0 + 1.2, z0 + t], [x1 - 1.2, z0 + t]]) trees.add(tx, CURB, tz, 0.7);
           }
         }
-
+        for (const t of [22, 38]) {
+          for (const [lx, lz, ox, oz] of [[x0 + t, z0 + 0.7, 0, -1], [x0 + t, z1 - 0.7, 0, 1], [x0 + 0.7, z0 + t, -1, 0], [x1 - 0.7, z0 + t, 1, 0]]) {
+            lamps.add(lx, CURB + 3.1, lz);
+            lampHeads.add(lx + ox * 0.6, CURB + 6.2, lz + oz * 0.6);
+          }
+        }
         const lm = landmarkAt[`${bi},${bj}`];
-
-        if (district === 'park') {
-          ground.flat(x0 + 4, z0 + 4, x1 - 4, z1 - 4, CURB + 0.01, 0x6f9b4c);
-          ground.flat(x0 + 22, z0 + 22, x1 - 22, z1 - 22, CURB + 0.02, 0x4f8fc0);
-          for (let t = 0; t < 18; t++) {
-            const tx = x0 + 7 + rng() * (BLOCK - 14), tz = z0 + 7 + rng() * (BLOCK - 14);
-            if (Math.abs(tx - (x0 + x1) / 2) < 10 && Math.abs(tz - (z0 + z1) / 2) < 10) continue;
-            trees.push([tx, tz, 0.8 + rng() * 0.6]);
-          }
-          continue;
-        }
-
-        if (district === 'plaza') {
-          ground.flat(x0 + 3, z0 + 3, x1 - 3, z1 - 3, CURB + 0.01, 0xd9d2c4);
-          const cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
-          bld.box(cx - 5, CURB, cz - 5, cx + 5, CURB + 0.8, cz + 5, 0xc7c0b2, { plain: true });
-          ground.flat(cx - 4.4, cz - 4.4, cx + 4.4, cz + 4.4, CURB + 0.7, 0x5aa6d6);
-          bld.box(cx - 0.6, CURB, cz - 0.6, cx + 0.6, CURB + 5, cz + 0.6, 0xe9e4d8, { plain: true });
-          rects.push({ x0: cx - 5, z0: cz - 5, x1: cx + 5, z1: cz + 5 });
-          // City hall on the north side.
-          addBuilding(x0 + 12, z0 + 6, x1 - 12, z0 + 20, 16, 0xe8e2d4, { tile: [5, 4] });
-          bld.box(x0 + 26, CURB + 16, z0 + 9, x1 - 26, CURB + 24, z0 + 17, 0xd8d0be, { tile: [4, 4] });
-          for (const [tx, tz] of [[x0 + 8, z1 - 8], [x1 - 8, z1 - 8], [x0 + 8, z0 + 26], [x1 - 8, z0 + 26]]) trees.push([tx, tz, 1]);
-          continue;
-        }
-
-        if (district === 'residential') {
-          // Three by three houses with pitched roofs and front lawns.
-          ground.flat(x0 + 3.6, z0 + 3.6, x1 - 3.6, z1 - 3.6, CURB + 0.01, 0x7faa5a);
-          for (let hj = 0; hj < 3; hj++)
-            for (let hi = 0; hi < 3; hi++) {
-              if (hi === 1 && hj === 1) { trees.push([x0 + 30, z0 + 30, 1.1]); continue; }
-              const cx = x0 + 5 + hi * 17 + 8.5, cz = z0 + 5 + hj * 17 + 8.5;
-              const w = 9 + rng() * 3, d = 8 + rng() * 3, h = 4 + rng() * 3.5;
-              const hx0 = cx - w / 2, hz0 = cz - d / 2;
-              const wall = pick(pal.residential);
-              addBuilding(hx0, hz0, hx0 + w, hz0 + d, h, wall, { tile: [3.2, 3] });
-              bld.gable(hx0 - 0.4, CURB + h, hz0 - 0.4, hx0 + w + 0.4, hz0 + d + 0.4, 2.6 + rng(), pick(pal.roofs), wall, rng() < 0.5);
-            }
-          continue;
-        }
-
-        if (district === 'industrial') {
-          for (let lj = 0; lj < 2; lj++) {
-            const wz0 = z0 + 5 + lj * 27, h = 8 + rng() * 5;
-            const color = pick(pal.industrial);
-            addBuilding(x0 + 5, wz0, x1 - 14, wz0 + 21, h, color, { tile: [8, 5], roof: 0x6b7076 });
-            for (let c = 0; c < 3; c++) containers.push([x1 - 9, wz0 + 3 + c * 6.5, c === 2 && rng() < 0.5 ? 2 : 1]);
-          }
-          for (const c of containers.slice(-6)) rects.push({ x0: c[0] - 3.2, z0: c[1] - 1.4, x1: c[0] + 3.2, z1: c[1] + 1.4 });
-          continue;
-        }
-
-        // Downtown towers and midtown blocks: four lots.
-        const downtown = district === 'downtown';
-        const centre = Math.hypot(bi - 3, bj - 3) / 4;
-        for (let lj = 0; lj < 2; lj++)
-          for (let li = 0; li < 2; li++) {
-            const w = 18 + rng() * 6, d = 18 + rng() * 6;
-            const lx = x0 + 4 + li * 26 + 13 + (rng() - 0.5) * (25 - w), lz = z0 + 4 + lj * 26 + 13 + (rng() - 0.5) * (25 - d);
-            const isLandmark = lm && ((lm.side === 0 && lj === 0 && li === 0) || (lm.side === 1 && li === 1 && lj === 0) || (lm.side === 2 && lj === 1 && li === 1) || (lm.side === 3 && li === 0 && lj === 1));
-            if (isLandmark) {
-              const bx0 = lx - w / 2, bz0 = lz - d / 2;
-              addBuilding(bx0, bz0, bx0 + w, bz0 + d, 11, lm.color, { tile: [4, 3.6], roof: 0x55595f });
-              this.addSign(lm, bx0, bz0, bx0 + w, bz0 + d, 11);
-              continue;
-            }
-            const h = downtown ? 34 + (1 - centre) * 40 * rng() + rng() * 20 : 12 + rng() * 18;
-            const color = pick(downtown ? pal.downtown : pal.commercial);
-            const bx0 = lx - w / 2, bz0 = lz - d / 2;
-            addBuilding(bx0, bz0, bx0 + w, bz0 + d, h, color, { roof: 0x6e7177 });
-            if (downtown && rng() < 0.6) {
-              const s = 3 + rng() * 3;
-              bld.box(bx0 + s, CURB + h, bz0 + s, bx0 + w - s, CURB + h + 6 + rng() * 14, bz0 + d - s, color, { roof: 0x5e6167 });
-            }
-            if (rng() < 0.7) bld.box(lx - 2, CURB + h, lz - 1.5, lx + 1, CURB + h + 1.6, lz + 1.5, 0x9a9ea3, { plain: true });
-          }
+        this.buildStreetBlock(kind, b, ctx, pal, pick, lm);
       }
 
-    const city = bld.mesh(this.buildingMat);
-    city.castShadow = city.receiveShadow = true;
-    const base = ground.mesh(plainMat);
-    base.receiveShadow = true;
-    this.scene.add(city, base);
-
-    // Trees and containers are instanced.
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3();
-    const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.18, 0.24, 2.2, 6), new THREE.MeshStandardMaterial({ color: 0x6b4b32, roughness: 1 }), trees.length);
-    const crown = new THREE.InstancedMesh(new THREE.IcosahedronGeometry(1.6, 0), new THREE.MeshStandardMaterial({ color: 0x3f7d3a, roughness: 1, flatShading: true }), trees.length);
-    trees.forEach(([x, z, k], n) => {
-      trunk.setMatrixAt(n, m.compose(p.set(x, CURB + 1.1 * k, z), q, s.set(k, k, k)));
-      crown.setMatrixAt(n, m.compose(p.set(x, CURB + 3 * k, z), q, s.set(k, k * 1.2, k)));
-    });
-    crown.castShadow = trunk.castShadow = true;
-    this.scene.add(trunk, crown);
-
-    if (containers.length) {
-      const colors = [0xb5452f, 0x2f6fa8, 0x3f8a52, 0xd19a2a];
-      const box = new THREE.InstancedMesh(new THREE.BoxGeometry(6.1, 2.6, 2.5), new THREE.MeshStandardMaterial({ color: 0xffffff, roughness: 0.8 }), containers.length + 8);
-      let n = 0;
-      for (const [x, z, stack] of containers)
-        for (let l = 0; l < stack; l++) {
-          box.setMatrixAt(n, m.compose(p.set(x, CURB + 1.3 + l * 2.6, z), q, s.set(1, 1, 1)));
-          box.setColorAt(n, new THREE.Color(colors[(n * 7 + l) % colors.length]));
-          n++;
+    // Roads: asphalt on every segment and junction, decks on bridges, markings.
+    const asphalt = new THREE.Color(0xffffff), uvs = 1 / 8;
+    for (let j = j0; j <= j1 + (j1 === NZ - 1 ? 1 : 0); j++)
+      for (let i = 0; i <= NX; i++) {
+        const n = this.node(i, j);
+        if (n.roads) roads.flat(n.x - HALF, n.z - HALF, n.x + HALF, n.z + HALF, 0, asphalt, uvs);
+        if (i < NX && this.roadSet.has(`h${i},${j}`)) this.buildSegment(roads, bld, white, yellow, i, j, 0);
+        if (j < NZ && this.roadSet.has(`v${i},${j}`) && j <= j1) this.buildSegment(roads, bld, white, yellow, i, j, 1);
+        if (!n.roads) {
+          // Fill the corner between open cells so no sea shows through.
+          const around = [this.kind(i - 1, j - 1), this.kind(i, j - 1), this.kind(i - 1, j), this.kind(i, j)].filter((k2) => k2 !== 'water');
+          if (around.length === 4) ground.flat(n.x - HALF, n.z - HALF, n.x + HALF, n.z + HALF, 0.012, GROUND_COLORS[around[0]] || 0x7fa04e);
         }
-      box.count = n;
-      box.castShadow = box.receiveShadow = true;
-      this.scene.add(box);
+        if (n.signal) this.buildSignal(n, chunk, white);
+      }
+    // Gaps between cells without a road get ground so they don't look like holes.
+    for (let j = j0; j <= j1; j++)
+      for (let i = 0; i <= NX; i++) {
+        if (j <= NZ && i < NX && !this.roadSet.has(`h${i},${j}`)) this.fillGap(ground, [i, j - 1], [i, j], i * PITCH + HALF, j * PITCH - HALF, i * PITCH + HALF + BLOCK, j * PITCH + HALF);
+        if (!this.roadSet.has(`v${i},${j}`)) this.fillGap(ground, [i - 1, j], [i, j], i * PITCH - HALF, j * PITCH + HALF, i * PITCH + HALF, j * PITCH + HALF + BLOCK);
+      }
+
+    const add = (mesh, shadow = true, receive = true) => { if (!mesh) return; mesh.castShadow = shadow; mesh.receiveShadow = receive; group.add(mesh); return mesh; };
+    if (!bld.empty) add(bld.mesh(this.buildingMat));
+    if (!ground.empty) add(ground.mesh(this.plainMat), false);
+    if (!roads.empty) add(roads.mesh(this.roadMat), false);
+    add(white.mesh(this.markGeo, this.markMat.white), false);
+    add(yellow.mesh(this.markGeo, this.markMat.yellow), false);
+    // Trees: items are (x, ground height, z, scale).
+    const crowns = new InstanceList(), trunks = new InstanceList();
+    for (const [x, y, z, s] of trees.items) { crowns.add(x, y + 3 * s, z, s, s * 1.2, s); trunks.add(x, y + 1.1 * s, z, s, s, s); }
+    add(crowns.mesh(this.crownGeo, this.crownMat));
+    add(trunks.mesh(this.trunkGeo, this.trunkMat));
+    add(palms.mesh(this.palmLeafGeo, this.palmMat));
+    const palmTrunks = new InstanceList();
+    for (const [x, , z] of palms.items) palmTrunks.add(x, 3.5, z);
+    add(palmTrunks.mesh(this.palmTrunkGeo, this.palmTrunkMat));
+    add(hills.mesh(this.hillGeo, this.hillMat), false);
+    add(containers.mesh(this.containerGeo, this.containerMat));
+    add(lamps.mesh(this.streetPoleGeo, this.streetPoleMat));
+    add(lampHeads.mesh(this.lampHeadGeo, this.lampHeadMat), false);
+
+    // Signal poles, heads and bulbs for this chunk.
+    if (chunk.poles.length) {
+      const pole = new InstanceList(), head = new InstanceList(), bulbs = new InstanceList();
+      for (const pl of chunk.poles) {
+        pole.add(pl.x, 2.6, pl.z);
+        head.add(pl.x, 4.6, pl.z);
+        const D = DIRS[pl.d];
+        for (let l = 0; l < 3; l++) bulbs.add(pl.x - D.x * 0.24, 5.02 - l * 0.42, pl.z - D.z * 0.24, 1, 1, 1, 0x2a2d31);
+      }
+      add(pole.mesh(this.poleGeo, this.poleMat));
+      add(head.mesh(this.headGeo, this.headMat));
+      chunk.lampMesh = add(bulbs.mesh(this.lampGeo, new THREE.MeshBasicMaterial({ color: 0xffffff })), false);
     }
   }
 
-  addSign(lm, bx0, bz0, bx1, bz1, h) {
-    const tex = textTexture(lm.sign, lm.signBg);
-    const sign = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.2), new THREE.MeshBasicMaterial({ map: tex }));
-    const cx = (bx0 + bx1) / 2, cz = (bz0 + bz1) / 2;
-    const out = [[0, -1], [1, 0], [0, 1], [-1, 0]][lm.side];
-    const half = [(bz1 - bz0) / 2, (bx1 - bx0) / 2][lm.side % 2];
-    sign.position.set(cx + out[0] * (half + 0.06), CITY.CURB + h - 2.4, cz + out[1] * (half + 0.06));
-    sign.rotation.y = Math.atan2(out[0], out[1]);
-    this.scene.add(sign);
-
-    // Door marker in the lane beside this side of the block.
-    const [bi, bj] = lm.block, { PITCH, LANE } = CITY;
-    // x, z: the door marker in the lane next to the building; walk: the sidewalk in front.
-    const near = CITY.HALF + 2;
-    let x, z, h2, walk;
-    if (lm.side === 0) { x = cx; z = bj * PITCH + LANE; h2 = headingOf(0); walk = { x, z: bj * PITCH + near }; }
-    else if (lm.side === 1) { x = (bi + 1) * PITCH - LANE; z = cz; h2 = headingOf(1); walk = { x: (bi + 1) * PITCH - near, z }; }
-    else if (lm.side === 2) { x = cx; z = (bj + 1) * PITCH - LANE; h2 = headingOf(2); walk = { x, z: (bj + 1) * PITCH - near }; }
-    else { x = bi * PITCH + LANE; z = cz; h2 = headingOf(3); walk = { x: bi * PITCH + near, z }; }
-    this.landmarks.push({ type: lm.type, name: lm.name, x, z, h: h2, walk });
+  fillGap(ground, k1, k2, x0, z0, x1, z1) {
+    const a = this.kind(...k1), b = this.kind(...k2);
+    if (a === 'water' && b === 'water') return;
+    const land = a === 'water' ? b : a;
+    const color = a === 'water' || b === 'water' ? 0xe6d3a0 : GROUND_COLORS[land] || (STREET_KINDS.has(land) ? 0xb8b3a8 : 0x7fa04e);
+    ground.flat(x0, z0, x1, z1, STREET_KINDS.has(land) && a !== 'water' && b !== 'water' ? CITY.CURB : 0.01, color);
   }
 
-  buildStuntYard(k, x0, z0, extra) {
+  // One road segment: asphalt, centre line, and a bridge deck over water.
+  buildSegment(roads, bld, white, yellow, i, j, vertical) {
+    const { PITCH, HALF, BLOCK } = CITY;
+    const asphalt = new THREE.Color(0xffffff), uvs = 1 / 8;
+    const key = `${vertical ? 'v' : 'h'}${i},${j}`;
+    let x0, z0, x1, z1;
+    if (vertical) { x0 = i * PITCH - HALF; x1 = i * PITCH + HALF; z0 = j * PITCH + HALF; z1 = z0 + BLOCK; }
+    else { x0 = i * PITCH + HALF; x1 = x0 + BLOCK; z0 = j * PITCH - HALF; z1 = j * PITCH + HALF; }
+    roads.flat(x0, z0, x1, z1, 0, asphalt, uvs);
+    const len = BLOCK - 9, cx = (x0 + x1) / 2, cz = (z0 + z1) / 2;
+    if (vertical) { yellow.add(cx - 0.18, 0.02, cz, 0.14, 1, len); yellow.add(cx + 0.18, 0.02, cz, 0.14, 1, len); }
+    else { yellow.add(cx, 0.02, cz - 0.18, len, 1, 0.14); yellow.add(cx, 0.02, cz + 0.18, len, 1, 0.14); }
+    if (this.bridges.has(key)) {
+      // Deck, railings and piers.
+      bld.box(x0 - 0.6, -1.4, z0 - 0.3, x1 + 0.6, -0.02, z1 + 0.3, 0xb9b5ab, { plain: true });
+      if (vertical) {
+        bld.box(x0 - 0.6, -0.02, z0, x0, 1.0, z1, 0xd8d4c8, { plain: true });
+        bld.box(x1, -0.02, z0, x1 + 0.6, 1.0, z1, 0xd8d4c8, { plain: true });
+        for (const pz of [z0 + 12, z0 + 36]) bld.box(cx - 2, -8, pz - 1.5, cx + 2, -1.4, pz + 1.5, 0x9a968c, { plain: true });
+      } else {
+        bld.box(x0, -0.02, z0 - 0.6, x1, 1.0, z0, 0xd8d4c8, { plain: true });
+        bld.box(x0, -0.02, z1, x1, 1.0, z1 + 0.6, 0xd8d4c8, { plain: true });
+      }
+      // The Sea Link gets its tall cable-stay towers, one each side of the deck.
+      if (vertical && i === 1) {
+        bld.box(x0 - 1.6, 0, cz - 1, x0 - 0.6, 46, cz + 1, 0xe8e4da, { plain: true });
+        bld.box(x1 + 0.6, 0, cz - 1, x1 + 1.6, 46, cz + 1, 0xe8e4da, { plain: true });
+        bld.box(x0 - 1.6, 40, cz - 1, x1 + 1.6, 42, cz + 1, 0xe8e4da, { plain: true });
+      }
+    }
+  }
+
+  buildSignal(n, chunk, white) {
+    const { HALF } = CITY;
+    const off = HALF + 1.2;
+    for (let d = 0; d < 4; d++) {
+      if (!this.hasRoad(n.i, n.j, reverseDir(d))) continue;
+      // A pole for traffic arriving in direction d, on its near kerb side.
+      const D = DIRS[d], r = laneSide(d);
+      const pl = { node: n, axis: axisOf(d), d, x: n.x - D.x * off + r.x * off, z: n.z - D.z * off + r.z * off, state: '', chunk };
+      chunk.poles.push(pl);
+      this.poles.push(pl);
+    }
+    for (let d = 0; d < 4; d++) {
+      if (!this.hasRoad(n.i, n.j, d)) continue;
+      const D = DIRS[d], alongX = D.x !== 0;
+      const cx = n.x + D.x * (HALF + 2), cz = n.z + D.z * (HALF + 2);
+      for (let k = -HALF + 0.9; k < HALF - 0.5; k += 1.3) {
+        if (alongX) white.add(cx, 0.02, cz + k, 3, 1, 0.65);
+        else white.add(cx + k, 0.02, cz, 0.65, 1, 3);
+      }
+      // Stop line across the lane coming back into this junction.
+      const rr = laneSide(reverseDir(d));
+      const sx = n.x + D.x * STOP_LINE + rr.x * (HALF / 2), sz = n.z + D.z * STOP_LINE + rr.z * (HALF / 2);
+      if (alongX) white.add(sx, 0.02, sz, 0.5, 1, HALF - 0.4);
+      else white.add(sx, 0.02, sz, HALF - 0.4, 1, 0.5);
+    }
+  }
+
+  buildOpen(kind, b, ctx) {
+    const { x0, z0, x1, z1 } = b, rng = ctx.rng;
+    if (kind === 'beach') {
+      for (let t = 0; t < 6; t++) ctx.palms.add(x0 + 6 + rng() * 48, 7.2, z0 + 6 + rng() * 48);
+    } else if (kind === 'farm') {
+      // Patchwork fields and the odd farmhouse.
+      const cols = [0x86a84f, 0x9db35a, 0x6f8f3f, 0xb8a868, 0x7d9a4a];
+      for (let a = 0; a < 3; a++) for (let c = 0; c < 3; c++) ctx.ground.flat(x0 + a * 20 + 0.5, z0 + c * 20 + 0.5, x0 + a * 20 + 19.5, z0 + c * 20 + 19.5, 0.02, cols[Math.floor(rng() * cols.length)]);
+      if (rng() < 0.6) {
+        const hx = x0 + 10 + rng() * 34, hz = z0 + 10 + rng() * 34;
+        ctx.bld.box(hx, 0, hz, hx + 7, 3.4, hz + 6, 0xe8d8b8, { tile: [3.5, 3.4] });
+        ctx.bld.gable(hx - 0.4, 3.4, hz - 0.4, hx + 7.4, hz + 6.4, 2, 0xa04a32, 0xe8d8b8, true);
+        const r = { x0: hx, z0: hz, x1: hx + 7, z1: hz + 6 };
+        this.buildingSolid.add(r);
+        this.buildingRects[b.bi + b.bj * CITY.NX].push(r);
+      }
+      for (let t = 0; t < 3; t++) ctx.trees.add(x0 + rng() * 60, 0.02, z0 + rng() * 60, 0.9);
+    } else if (kind === 'airport') {
+      this.buildAirportPart(b, ctx);
+    } else if (kind === 'stunts') {
+      this.buildStuntYard(b, ctx);
+    } else if (kind === 'parking') {
+      for (let row = 0; row < 2; row++) {
+        const rz = z0 + 12 + row * 30;
+        for (let c = 0; c <= 9; c++) ctx.white.add(x0 + 6 + c * 6, 0.03, rz, 0.15, 1, 6);
+        for (let c = 0; c < 9; c++) this.parkingSpots.push({ x: x0 + 9 + c * 6, z: rz, h: row === 0 ? headingOf(1) : headingOf(3) });
+      }
+    }
+  }
+
+  // The airport: runway across the blocks, a terminal and a parked plane.
+  buildAirportPart(b, ctx) {
+    const { x0, z0, x1, z1 } = b;
+    if (!this.airportBuilt) {
+      this.airportBuilt = true;
+      const rz = (b.bj + 1) * CITY.PITCH;          // runway centre line along the row boundary
+      const rx0 = b.x0, rx1 = b.x0 + CITY.PITCH * 2 - CITY.ROAD;
+      ctx.ground.flat(rx0, rz - 10, rx1, rz + 10, 0.03, 0x34383d);
+      for (let x = rx0 + 6; x < rx1 - 6; x += 12) ctx.white.add(x, 0.05, rz, 6, 1, 0.5);
+      ctx.white.add(rx0 + 3, 0.05, rz, 2, 1, 16);
+      ctx.white.add(rx1 - 3, 0.05, rz, 2, 1, 16);
+      // Terminal on the north side.
+      ctx.addBuilding(x0 + 64, z0 + 2, x0 + 120, z0 + 18, 12, 0x9fb8cc, { tile: [6, 4] });
+      // Control tower.
+      ctx.bld.box(x0 + 56, CITY.CURB, z0 + 26, x0 + 60, 26, z0 + 30, 0xd8d4c8, { plain: true });
+      ctx.bld.box(x0 + 54.5, 26, z0 + 24.5, x0 + 61.5, 30, z0 + 31.5, 0x6f93a8, { tile: [3, 4] });
+      this.buildingSolid.add({ x0: x0 + 56, z0: z0 + 26, x1: x0 + 60, z1: z0 + 30 });
+      // A jet parked on the apron.
+      const px = x0 + 40, pz = z0 + 34, white = 0xf2f2ee;
+      ctx.bld.box(px - 16, 2.2, pz - 2, px + 16, 6.2, pz + 2, white, { tile: [2, 4] });
+      ctx.bld.box(px - 4, 3.2, pz - 17, px + 3, 3.8, pz + 17, 0xdcdcd6, { plain: true });
+      ctx.bld.box(px - 16, 6.2, pz - 0.4, px - 11, 12, pz + 0.4, 0xe0701c, { plain: true });
+      ctx.bld.box(px - 16, 5.8, pz - 6, px - 12, 6.3, pz + 6, 0xdcdcd6, { plain: true });
+      for (const t of [-9, 9]) ctx.bld.box(px - 2, 1.6, pz + t - 1.2, px + 2, 3.3, pz + t + 1.2, 0x8a8f96, { plain: true });
+      ctx.bld.box(px - 1, 0, pz - 1, px + 1, 2.2, pz + 1, 0x2a2d31, { plain: true });
+      this.buildingSolid.add({ x0: px - 16, z0: pz - 2.5, x1: px + 16, z1: pz + 2.5 });
+    }
+    void x1; void z1;
+  }
+
+  buildStuntYard(b, ctx) {
+    const { x0, z0 } = b;
     const stripes = canvasTexture(64, (g) => {
       g.fillStyle = '#f2c230'; g.fillRect(0, 0, 64, 64);
       g.fillStyle = '#1b1d20';
@@ -612,7 +863,6 @@ class World {
     const legMat = new THREE.MeshStandardMaterial({ color: 0x55595e, roughness: 0.9 });
     const add = (x, z, dir, len, width, h) => {
       const D = DIRS[dir];
-      // (x, z) is the low end of the ramp.
       this.ramps.push({ x, z, fx: D.x, fz: D.z, len, width, h, id: this.ramps.length });
       const g = new THREE.Group();
       g.position.set(x, 0, z);
@@ -625,202 +875,144 @@ class World {
       leg.position.set(0, h / 2 - 0.12, len - 0.25);
       deck.castShadow = leg.castShadow = deck.receiveShadow = true;
       g.add(deck, leg);
-      this.scene.add(g);
+      ctx.group.add(g);
     };
     add(x0 + 6, z0 + 14, 0, 11, 5, 2.4);
     add(x0 + 54, z0 + 46, 2, 11, 5, 2.4);
     add(x0 + 30, z0 + 50, 3, 14, 6, 3.4);
     add(x0 + 16, z0 + 54, 3, 8, 4, 1.6);
-    // Concrete blocks to weave between.
-    const blockMat = new THREE.MeshStandardMaterial({ color: 0xc9c4b8, roughness: 0.95 });
-    for (const [bx, bz] of [[x0 + 34, z0 + 16], [x0 + 42, z0 + 24], [x0 + 18, z0 + 32]]) {
-      const b = new THREE.Mesh(new THREE.BoxGeometry(2, 1, 2), blockMat);
-      b.position.set(bx, 0.5, bz);
-      b.castShadow = b.receiveShadow = true;
-      this.scene.add(b);
-      extra.push({ x0: bx - 1, z0: bz - 1, x1: bx + 1, z1: bz + 1 });
-    }
-    void k;
   }
 
-  buildParkingLot(x0, z0) {
-    this.lotLines = [];
-    for (let row = 0; row < 2; row++) {
-      const rz = z0 + 12 + row * 30;
-      for (let c = 0; c < 9; c++) {
-        const bx = x0 + 6 + c * 6;
-        this.lotLines.push([bx, rz, 0.15, 6]);
-        this.parkingSpots.push({ x: bx + 3, z: rz, h: row === 0 ? headingOf(1) : headingOf(3) });
+  buildStreetBlock(kind, b, ctx, pal, pick, lm) {
+    const { x0, z0, x1, z1 } = b, { CURB, BLOCK } = CITY, rng = ctx.rng, bld = ctx.bld;
+    const k = b.bi + b.bj * CITY.NX;
+    if (kind === 'park') {
+      const maidan = b.bj >= 63;
+      ctx.ground.flat(x0 + 4, z0 + 4, x1 - 4, z1 - 4, CURB + 0.01, maidan ? 0xa8a070 : 0x6f9b4c);
+      if (maidan) ctx.ground.flat(x0 + 28, z0 + 22, x1 - 28, z1 - 22, CURB + 0.02, 0xd8c890); // the cricket pitch
+      else ctx.ground.flat(x0 + 22, z0 + 22, x1 - 22, z1 - 22, CURB + 0.02, 0x4f8fc0);
+      for (let t = 0; t < 16; t++) {
+        const a = (t / 16) * Math.PI * 2;
+        ctx.trees.add(x0 + 30 + Math.cos(a) * 24, CURB, z0 + 30 + Math.sin(a) * 24, 1);
       }
-      this.lotLines.push([x0 + 6 + 9 * 6, rz, 0.15, 6]);
+      return;
     }
-  }
-
-  buildMarkings() {
-    const { N, PITCH, HALF, BLOCK } = CITY;
-    const white = this.lotLines ? this.lotLines.slice() : [], yellow = [];
-    const rect = (list, cx, cz, ex, ez) => list.push([cx, cz, ex, ez]);
-
-    for (let j = 0; j <= N; j++)
-      for (let i = 0; i < N; i++) {
-        const cx = (i + 0.5) * PITCH, len = BLOCK - 9;
-        rect(yellow, cx, j * PITCH - 0.18, len, 0.14);
-        rect(yellow, cx, j * PITCH + 0.18, len, 0.14);
-        rect(yellow, j * PITCH - 0.18, cx, 0.14, len);
-        rect(yellow, j * PITCH + 0.18, cx, 0.14, len);
-      }
-
-    for (const n of this.nodes)
-      for (let d = 0; d < 4; d++) {
-        if (!this.hasRoad(n.i, n.j, d)) continue;
-        const D = DIRS[d], alongX = D.x !== 0;
-        const cx = n.x + D.x * (HALF + 2), cz = n.z + D.z * (HALF + 2);
-        for (let k = -HALF + 0.9; k < HALF - 0.5; k += 1.3) {
-          if (alongX) rect(white, cx, cz + k, 3, 0.65);
-          else rect(white, cx + k, cz, 0.65, 3);
+    if (kind === 'gateway') {
+      // Gateway of India on the harbour side, and a grand old hotel beside it.
+      const gx = x1 - 10, gz = (z0 + z1) / 2, stone = 0xc9a46a;
+      bld.box(gx - 3, CURB, gz - 9, gx + 3, CURB + 16, gz - 4, stone, { plain: true });
+      bld.box(gx - 3, CURB, gz + 4, gx + 3, CURB + 16, gz + 9, stone, { plain: true });
+      bld.box(gx - 3, CURB + 16, gz - 9, gx + 3, CURB + 21, gz + 9, stone, { plain: true });
+      for (const t of [-8, -3, 3, 8]) bld.box(gx - 1, CURB + 21, gz + t - 1, gx + 1, CURB + 25, gz + t + 1, stone, { plain: true });
+      this.buildingSolid.add({ x0: gx - 3, z0: gz - 9, x1: gx + 3, z1: gz - 4 });
+      this.buildingSolid.add({ x0: gx - 3, z0: gz + 4, x1: gx + 3, z1: gz + 9 });
+      ctx.addBuilding(x0 + 6, z0 + 6, x0 + 34, z0 + 30, 22, 0xe2cfa8, { tile: [4, 3.6], roof: 0xb8452a });
+      for (const [dx, dz] of [[6, 6], [28, 6], [17, 18]]) bld.box(x0 + dx - 3, CURB + 22, z0 + dz - 3 + 3, x0 + dx + 3, CURB + 27, z0 + dz + 3 + 3, 0xb8452a, { plain: true });
+      return;
+    }
+    if (kind === 'dense') {
+      // Rows of huts with blue tarps and rusty tin roofs.
+      for (let row = 0; row < 7; row++) {
+        const rz = z0 + 4 + row * 7.6;
+        let x = x0 + 4;
+        while (x < x1 - 6) {
+          const w = 3 + rng() * 3, h = 3 + rng() * 4;
+          bld.box(x, CURB, rz, x + w, CURB + h, rz + 5, pick([0xc8b8a0, 0xa8c8d8, 0xd8a890, 0xe0d0b0, 0x98b8a0]), { tile: [2.5, 2.4], roof: pick([0x2f6fbf, 0x8a5a3a, 0x7a7f86, 0x2f6fbf]) });
+          x += w + 0.3;
         }
-        const rr = rightOf(reverseDir(d));
-        const sx = n.x + D.x * STOP_LINE + rr.x * (HALF / 2), sz = n.z + D.z * STOP_LINE + rr.z * (HALF / 2);
-        if (alongX) rect(white, sx, sz, 0.5, HALF - 0.4);
-        else rect(white, sx, sz, HALF - 0.4, 0.5);
+        const r = { x0: x0 + 4, z0: rz, x1: x - 0.3, z1: rz + 5 };
+        this.buildingRects[k].push(r);
+        this.buildingSolid.add(r);
       }
-
-    const geo = new THREE.PlaneGeometry(1, 1).rotateX(-Math.PI / 2);
-    const make = (list, color, y) => {
-      const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.7, polygonOffset: true, polygonOffsetFactor: -2 });
-      const mesh = new THREE.InstancedMesh(geo, mat, list.length);
-      const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3();
-      list.forEach(([x, z, ex, ez], k) => mesh.setMatrixAt(k, m.compose(p.set(x, y, z), q, s.set(ex, 1, ez))));
-      mesh.receiveShadow = true;
-      this.scene.add(mesh);
-    };
-    make(white, 0xeeeeea, 0.02);
-    make(yellow, 0xf2c230, 0.02);
-  }
-
-  buildLights() {
-    const { HALF } = CITY;
-    const off = HALF + 1.2;
-    for (const n of this.nodes)
-      for (let d = 0; d < 4; d++) {
-        if (!this.hasRoad(n.i, n.j, reverseDir(d))) continue;
-        const D = DIRS[d], r = rightOf(d);
-        this.poles.push({ node: n, axis: axisOf(d), d, x: n.x - D.x * off + r.x * off, z: n.z - D.z * off + r.z * off, state: '' });
-      }
-
-    const count = this.poles.length;
-    const pole = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.09, 0.11, 4.6, 6), new THREE.MeshStandardMaterial({ color: 0x3b3f45 }), count);
-    const head = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 1.35, 0.5), new THREE.MeshStandardMaterial({ color: 0x23262a }), count);
-    const lamps = new THREE.InstancedMesh(new THREE.SphereGeometry(0.17, 6, 4), new THREE.MeshBasicMaterial({ color: 0xffffff }), count * 3);
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
-    const offColor = new THREE.Color(0x2a2d31);
-    this.poles.forEach((pl, k) => {
-      pole.setMatrixAt(k, m.compose(p.set(pl.x, 2.6, pl.z), q, one));
-      head.setMatrixAt(k, m.compose(p.set(pl.x, 4.6, pl.z), q, one));
-      const D = DIRS[pl.d];
-      for (let l = 0; l < 3; l++) {
-        lamps.setMatrixAt(k * 3 + l, m.compose(p.set(pl.x - D.x * 0.24, 5.02 - l * 0.42, pl.z - D.z * 0.24), q, one));
-        lamps.setColorAt(k * 3 + l, offColor);
-      }
-    });
-    pole.castShadow = head.castShadow = true;
-    this.scene.add(pole, head, lamps);
-    this.lampMesh = lamps;
-    this.lampColors = {
-      off: offColor,
-      red: new THREE.Color(0xff3b30),
-      yellow: new THREE.Color(0xffc21a),
-      green: new THREE.Color(0x2ee66b),
-    };
-  }
-
-  buildStreetLamps() {
-    const spots = [];
-    this.info.forEach((b, k) => {
-      if (!this.blocks[k]) return;
-      for (const t of [22, 38]) {
-        spots.push([b.x0 + t, b.z0 + 0.7, 0, -1], [b.x0 + t, b.z1 - 0.7, 0, 1], [b.x0 + 0.7, b.z0 + t, -1, 0], [b.x1 - 0.7, b.z0 + t, 1, 0]);
-      }
-    });
-    const pole = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.08, 0.12, 6.2, 6), new THREE.MeshStandardMaterial({ color: 0x4a4f55 }), spots.length);
-    this.lampHeadMat = new THREE.MeshBasicMaterial({ color: 0x8a8f96 });
-    const heads = new THREE.InstancedMesh(new THREE.BoxGeometry(0.5, 0.18, 0.9), this.lampHeadMat, spots.length);
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), one = new THREE.Vector3(1, 1, 1);
-    spots.forEach(([x, z, ox, oz], k) => {
-      pole.setMatrixAt(k, m.compose(p.set(x, CITY.CURB + 3.1, z), q, one));
-      heads.setMatrixAt(k, m.compose(p.set(x - ox * 0.6, CITY.CURB + 6.2, z - oz * 0.6), q, one));
-    });
-    pole.castShadow = true;
-    this.scene.add(pole, heads);
-  }
-
-  buildBarriers() {
-    const { SIZE, HALF } = CITY;
-    const mat = new THREE.MeshStandardMaterial({ color: 0xd2d0c8, roughness: 0.9 });
-    const len = SIZE + HALF * 2 + 1.2;
-    const parts = [
-      [SIZE / 2, -HALF - 0.3, len, 0.6],
-      [SIZE / 2, SIZE + HALF + 0.3, len, 0.6],
-      [-HALF - 0.3, SIZE / 2, 0.6, len],
-      [SIZE + HALF + 0.3, SIZE / 2, 0.6, len],
-    ];
-    for (const [x, z, w, d] of parts) {
-      const b = new THREE.Mesh(new THREE.BoxGeometry(w, 0.9, d), mat);
-      b.position.set(x, 0.45, z);
-      b.castShadow = b.receiveShadow = true;
-      this.scene.add(b);
+      return;
     }
+    // Four lots per block.
+    for (let lj = 0; lj < 2; lj++)
+      for (let li = 0; li < 2; li++) {
+        const w = 18 + rng() * 6, d = 18 + rng() * 6;
+        const lx = x0 + 4 + li * 26 + 13 + (rng() - 0.5) * (25 - w), lz = z0 + 4 + lj * 26 + 13 + (rng() - 0.5) * (25 - d);
+        const bx0 = lx - w / 2, bz0 = lz - d / 2;
+        const isLandmark = lm && ((lm.side === 0 && lj === 0 && li === 0) || (lm.side === 1 && li === 1 && lj === 0) || (lm.side === 2 && lj === 1 && li === 1) || (lm.side === 3 && li === 0 && lj === 1));
+        if (isLandmark) {
+          const look = { police: [0x2a4f8f, 'POLICE', '#1d3f7a'], hospital: [0xeef0ee, '✚ HOSPITAL', '#c8262c'], spray: [0x3a3f46, 'SPRAY & REPAIR', '#e0901c'] }[lm.type];
+          ctx.addBuilding(bx0, bz0, bx0 + w, bz0 + d, 11, look[0], { roof: 0x55595f });
+          this.addLandmark(lm, b, bx0, bz0, bx0 + w, bz0 + d, look, ctx.group);
+          continue;
+        }
+        if (kind === 'industrial') {
+          ctx.addBuilding(bx0, bz0, bx0 + w, bz0 + d, 7 + rng() * 5, pick(pal.industrial), { tile: [8, 5], roof: 0x6b7076 });
+          if (rng() < 0.6) ctx.containers.add(lx, CURB + 1.3, lz + d / 2 + 2.2 > z0 + 56 ? lz - d / 2 - 2 : lz + d / 2 + 2.2, 1, 1, 1, pick([0xb5452f, 0x2f6fa8, 0x3f8a52, 0xd19a2a]));
+          continue;
+        }
+        if (kind === 'town') {
+          const h = 5 + rng() * 6, color = pick(pal.town);
+          ctx.addBuilding(bx0 + 2, bz0 + 2, bx0 + w - 2, bz0 + d - 2, h, color, { tile: [3.5, 3.2] });
+          if (rng() < 0.4) bld.gable(bx0 + 1.6, CURB + h, bz0 + 1.6, bx0 + w - 1.6, bz0 + d - 1.6, 2.4, pick(pal.roofs), color, rng() < 0.5);
+          continue;
+        }
+        if (kind === 'res') {
+          // Housing society towers with black water tanks on the roof.
+          const h = 15 + rng() * 18, color = pick(pal.res);
+          ctx.addBuilding(bx0 + 1, bz0 + 1, bx0 + w - 1, bz0 + d - 1, h, color, { tile: [3.5, 3], roof: 0x9a9690 });
+          for (const t of [-1, 1]) bld.box(lx + t * 3 - 0.8, CURB + h, lz - 0.8, lx + t * 3 + 0.8, CURB + h + 1.6, lz + 0.8, 0x1d1f22, { plain: true });
+          continue;
+        }
+        const tall = kind === 'city';
+        const h = tall ? 30 + rng() * 55 : 12 + rng() * 18;
+        const color = pick(tall ? pal.city : pal.mid);
+        ctx.addBuilding(bx0, bz0, bx0 + w, bz0 + d, h, color, { roof: 0x6e7177 });
+        if (tall && rng() < 0.6) {
+          const s = 3 + rng() * 3;
+          bld.box(bx0 + s, CURB + h, bz0 + s, bx0 + w - s, CURB + h + 6 + rng() * 16, bz0 + d - s, color, { roof: 0x5e6167 });
+        }
+        if (rng() < 0.6) bld.box(lx - 2, CURB + h, lz - 1.5, lx + 1, CURB + h + 1.6, lz + 1.5, 0x9a9ea3, { plain: true });
+      }
+    void BLOCK;
   }
 
-  // A beach along the south edge of the city, with palms and the sea.
-  buildBeach() {
-    const { SIZE, HALF } = CITY;
-    const z0 = SIZE + HALF + 0.6;
-    const sand = new THREE.Mesh(new THREE.PlaneGeometry(SIZE + 400, 46).rotateX(-Math.PI / 2), new THREE.MeshStandardMaterial({ color: 0xe8d9a8, roughness: 1 }));
-    sand.position.set(SIZE / 2, -0.02, z0 + 23);
-    sand.receiveShadow = true;
-    this.waterMat = new THREE.MeshStandardMaterial({ color: 0x2f86b8, roughness: 0.25, metalness: 0.1 });
-    const sea = new THREE.Mesh(new THREE.PlaneGeometry(3000, 1200).rotateX(-Math.PI / 2), this.waterMat);
-    sea.position.set(SIZE / 2, -0.01, z0 + 46 + 600);
-    this.scene.add(sand, sea);
-    const palms = [];
-    for (let x = -60; x < SIZE + 60; x += 22 + this.rng() * 14) palms.push([x, z0 + 8 + this.rng() * 22]);
-    const m = new THREE.Matrix4(), q = new THREE.Quaternion(), p = new THREE.Vector3(), s = new THREE.Vector3(1, 1, 1);
-    const trunk = new THREE.InstancedMesh(new THREE.CylinderGeometry(0.16, 0.26, 7, 6), new THREE.MeshStandardMaterial({ color: 0x8a6a45 }), palms.length);
-    const leaves = new THREE.InstancedMesh(new THREE.ConeGeometry(2.6, 1.2, 7), new THREE.MeshStandardMaterial({ color: 0x3f8f4a, flatShading: true }), palms.length);
-    palms.forEach(([x, z], k) => {
-      trunk.setMatrixAt(k, m.compose(p.set(x, 3.5, z), q, s));
-      leaves.setMatrixAt(k, m.compose(p.set(x, 7.2, z), q, s));
-    });
-    trunk.castShadow = leaves.castShadow = true;
-    this.scene.add(trunk, leaves);
+  addLandmark(lm, b, bx0, bz0, bx1, bz1, look, group) {
+    const sign = new THREE.Mesh(new THREE.PlaneGeometry(9, 2.2), new THREE.MeshBasicMaterial({ map: textTexture(look[1], look[2]) }));
+    const cx = (bx0 + bx1) / 2, cz = (bz0 + bz1) / 2;
+    const out = [[0, -1], [1, 0], [0, 1], [-1, 0]][lm.side];
+    const half = [(bz1 - bz0) / 2, (bx1 - bx0) / 2][lm.side % 2];
+    sign.position.set(cx + out[0] * (half + 0.06), CITY.CURB + 11 - 2.4, cz + out[1] * (half + 0.06));
+    sign.rotation.y = Math.atan2(out[0], out[1]);
+    group.add(sign);
+    // Door marker in the lane beside this side of the block; walk: the sidewalk in front.
+    const { PITCH, LANE, HALF } = CITY, bi = b.bi, bj = b.bj, near = HALF + 2;
+    let x, z, h, walk;
+    if (lm.side === 0) { x = cx; z = bj * PITCH + LANE; h = headingOf(2); walk = { x, z: bj * PITCH + near }; }
+    else if (lm.side === 1) { x = (bi + 1) * PITCH - LANE; z = cz; h = headingOf(3); walk = { x: (bi + 1) * PITCH - near, z }; }
+    else if (lm.side === 2) { x = cx; z = (bj + 1) * PITCH - LANE; h = headingOf(0); walk = { x, z: (bj + 1) * PITCH - near }; }
+    else { x = bi * PITCH + LANE; z = cz; h = headingOf(1); walk = { x: bi * PITCH + near, z }; }
+    this.landmarks.push({ type: lm.type, name: lm.name, x, z, h, walk });
   }
 
   placeJobsAndPackages() {
     const rng = mulberry32(7741);
-    const { N, PITCH, HALF } = CITY;
-    const spot = (i, j, d, type, name) => {
-      const p = this.lanePoint(i, j, d, PITCH / 2);
+    for (const [type, name, i, j, d] of MUMBAI.jobs) {
+      if (!this.hasRoad(i, j, d)) continue;
+      const p = this.lanePoint(i, j, d, CITY.PITCH / 2);
       this.jobSpots.push({ type, name, x: p.x, z: p.z, h: p.h });
-    };
-    spot(2, 3, 0, 'taxi', 'Taxi rank');
-    spot(5, 5, 1, 'taxi', 'Taxi rank');
-    spot(1, 0, 0, 'delivery', 'Dockside depot');
-    spot(6, 1, 1, 'delivery', 'Freight yard');
-    spot(0, 6, 3, 'race', 'Street race');
-    spot(4, 7, 0, 'race', 'Beach sprint');
-
-    // Hidden packages tucked between buildings and in parks.
+    }
+    // Hidden packages, spread from Colaba to Boisar.
     let tries = 0;
-    while (this.packages.length < 20 && tries++ < 2000) {
-      const k = Math.floor(rng() * N * N), b = this.info[k];
-      if (OPEN_DISTRICTS.has(b.district) && rng() < 0.7) continue;
+    while (this.packages.length < 24 && tries++ < 4000) {
+      const k = Math.floor(rng() * this.info.length), b = this.info[k];
+      if (b.bj < 11 || !(STREET_KINDS.has(b.kind) || OPEN_KINDS.has(b.kind))) continue;
       const x = b.x0 + 3 + rng() * (CITY.BLOCK - 6), z = b.z0 + 3 + rng() * (CITY.BLOCK - 6);
-      const inside = this.buildingRects[k].concat(this.extraRects[k]).some((r) => x > r.x0 - 1.5 && x < r.x1 + 1.5 && z > r.z0 - 1.5 && z < r.z1 + 1.5);
-      if (inside || this.packages.some((p) => Math.hypot(p.x - x, p.z - z) < 40)) continue;
+      const inside = this.buildingRects[k].some((r) => x > r.x0 - 1.5 && x < r.x1 + 1.5 && z > r.z0 - 1.5 && z < r.z1 + 1.5);
+      if (inside || this.packages.some((p) => Math.hypot(p.x - x, p.z - z) < 120)) continue;
       this.packages.push({ x, z, y: this.blocks[k] ? CITY.CURB : 0 });
     }
-    void HALF;
+  }
+
+  // Show only the chunks near the camera.
+  updateVisibility(cx, cz, far) {
+    for (const c of this.chunks) {
+      const dz = cz < c.z0 ? c.z0 - cz : cz > c.z1 ? cz - c.z1 : 0;
+      c.group.visible = dz < far;
+    }
   }
 
   setNight(f) {
@@ -829,17 +1021,20 @@ class World {
   }
 
   updateLights(t) {
-    const { lampMesh, lampColors } = this;
-    let dirty = false;
-    this.poles.forEach((pl, k) => {
-      const st = lightState(pl.node, pl.axis, t);
-      if (st === pl.state) return;
-      pl.state = st;
-      lampMesh.setColorAt(k * 3, st === 'red' ? lampColors.red : lampColors.off);
-      lampMesh.setColorAt(k * 3 + 1, st === 'yellow' ? lampColors.yellow : lampColors.off);
-      lampMesh.setColorAt(k * 3 + 2, st === 'green' ? lampColors.green : lampColors.off);
-      dirty = true;
-    });
-    if (dirty) lampMesh.instanceColor.needsUpdate = true;
+    const { lampColors } = this;
+    for (const c of this.chunks) {
+      if (!c.group.visible || !c.lampMesh) continue;
+      let dirty = false;
+      c.poles.forEach((pl, k) => {
+        const st = lightState(pl.node, pl.axis, t);
+        if (st === pl.state) return;
+        pl.state = st;
+        c.lampMesh.setColorAt(k * 3, st === 'red' ? lampColors.red : lampColors.off);
+        c.lampMesh.setColorAt(k * 3 + 1, st === 'yellow' ? lampColors.yellow : lampColors.off);
+        c.lampMesh.setColorAt(k * 3 + 2, st === 'green' ? lampColors.green : lampColors.off);
+        dirty = true;
+      });
+      if (dirty) c.lampMesh.instanceColor.needsUpdate = true;
+    }
   }
 }

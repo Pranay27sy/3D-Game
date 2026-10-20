@@ -43,9 +43,11 @@ class Peds {
   // Put someone on a random sidewalk between minD and maxD metres from focus.
   place(p, focus, minD, maxD) {
     const w = this.world, L = CITY.BLOCK - SIDEWALK_INSET * 2;
+    // Only blocks roughly in range: the map is far too long to pick at random.
+    const near = focus ? w.sidewalkBlocks.filter((k) => { const b = w.info[k]; const d = Math.hypot(b.x0 + 30 - focus.x, b.z0 + 30 - focus.z); return d > minD - 45 && d < maxD + 45; }) : w.sidewalkBlocks;
+    if (!near.length) return;
     for (let t = 0; t < 40; t++) {
-      const k = Math.floor(Math.random() * w.info.length);
-      if (!w.hasSidewalk(k)) continue;
+      const k = near[Math.floor(Math.random() * near.length)];
       const pos = Math.random() * L * 4;
       const pt = w.sidewalkPoint(k, pos);
       const d = focus ? Math.hypot(pt.x - focus.x, pt.z - focus.z) : 0;
@@ -60,10 +62,12 @@ class Peds {
     let p = this.list.find((q) => q.state === 'walk' && q.far);
     if (!p) { p = new Ped(this.scene); this.list.push(p); }
     const k = this.world.nearestSidewalkBlock(x, z);
+    // In India the driver sits on the right, so they climb out on the right.
     const r = { x: -Math.cos(h), z: Math.sin(h) };
-    Object.assign(p, { x: x - r.x * 1.4, z: z - r.z * 1.4, y: 0, state: 'go', timer: 6, speed: 4.5 });
+    Object.assign(p, { x: x + r.x * 1.4, z: z + r.z * 1.4, y: 0, state: 'go', timer: 6, speed: 4.5 });
     if (k >= 0) { p.k = k; p.p = this.world.sidewalkParam(k, p.x, p.z); const t = this.world.sidewalkPoint(k, p.p); p.tx = t.x; p.tz = t.z; }
-    else { p.tx = p.x - r.x * 8; p.tz = p.z - r.z * 8; }
+    else { p.tx = p.x + r.x * 8; p.tz = p.z + r.z * 8; }
+    return p;
   }
 
   // Something scary happened at (x, z): everyone nearby runs.
@@ -149,6 +153,7 @@ class Peds {
             const s = Math.sign(lat) || (Math.random() < 0.5 ? 1 : -1);
             p.state = 'dodge'; p.timer = 0.5;
             p.sx = -fz * s * 6; p.sz = fx * s * 6;
+            if (this.onDodge) this.onDodge(p, c);
             break;
           }
         }
@@ -165,14 +170,14 @@ class Peds {
 
   // At a corner, keep going straight over the crosswalk if those cars have a red light.
   tryCross(p, before, t) {
-    const w = this.world, info = w.info[p.k], { N, PITCH } = CITY;
+    const w = this.world, info = w.info[p.k], { NX, NZ, PITCH } = CITY;
     const corner = w.sidewalkPoint(p.k, p.dir > 0 ? Math.ceil(before / (CITY.BLOCK - SIDEWALK_INSET * 2)) * (CITY.BLOCK - SIDEWALK_INSET * 2) : Math.floor(before / (CITY.BLOCK - SIDEWALK_INSET * 2)) * (CITY.BLOCK - SIDEWALK_INSET * 2));
     const prev = w.sidewalkPoint(p.k, before);
     const heading = prev.h + (p.dir < 0 ? Math.PI : 0);
     const hx = Math.round(Math.sin(heading)), hz = Math.round(Math.cos(heading));
     const ni = info.bi + hx, nj = info.bj + hz;
-    if (ni < 0 || nj < 0 || ni >= N || nj >= N) return;
-    const nk = ni + nj * N;
+    if (ni < 0 || nj < 0 || ni >= NX || nj >= NZ) return;
+    const nk = ni + nj * NX;
     if (!w.hasSidewalk(nk)) return;
     // The road being crossed carries traffic on the other axis.
     const node = w.node(Math.round(corner.x / PITCH), Math.round(corner.z / PITCH));

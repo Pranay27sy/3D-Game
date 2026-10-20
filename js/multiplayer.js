@@ -27,7 +27,7 @@ const MAX_PLAYERS = 10;
 const CR_DURATION = 240;
 const MP_MODES = {
   race: { name: 'Race', blurb: 'Everyone starts together. First to stop at the green marker wins. Each red light adds 5 seconds.', start: 'Start race' },
-  roam: { name: 'Open City', blurb: 'The whole open world together: take cars, do jobs, hit the stunt ramps and escape the police.', start: 'Start' },
+  roam: { name: 'Mumbai', blurb: 'All of Mumbai together: take cars, ride the local, do jobs, hit the stunt ramps and escape the police.', start: 'Start' },
   cops: { name: 'Cops & Robbers', blurb: 'A third of you drive police cars. Robbers must stay free for 4 minutes. Caught robbers join the police.', start: 'Start chase' },
 };
 
@@ -487,23 +487,29 @@ const MP = {
   },
 
   // ---------- Rounds ----------
-  // Two cars side by side in the eastbound lane, rows 7 m apart.
+  // Two cars side by side in the eastbound lane (the left half of the road), rows 7 m apart.
   grid(ids, i, j, slots) {
     const { PITCH, HALF } = CITY;
-    const n = world.node(i, j), h = headingOf(0);
+    const n = world.node(i, j), h = headingOf(0), side = laneSide(0);
     ids.forEach((id, k) => {
-      const s = PITCH - HALF - 8 - Math.floor(k / 2) * 7;
-      slots[id] = [n.x + s, n.z + (k % 2 ? 4.4 : 1.6), h];
+      const s = PITCH - HALF - 8 - Math.floor(k / 2) * 7, off = k % 2 ? 4.4 : 1.6;
+      slots[id] = [n.x + s + side.x * off, n.z + side.z * off, h];
     });
-    return { x: n.x + PITCH / 2, z: n.z + 3 };
+    return { x: n.x + PITCH / 2, z: n.z + side.z * 3 };
+  },
+
+  // A random eastbound road in the city to line everyone up on.
+  pickGrid(near, minD = 0, maxD = Infinity) {
+    const segs = world.segments.filter((sg) => sg.d === 0 && sg.j >= 45 && sg.j <= 69 && !world.bridges.has(`h${sg.i},${sg.j}`)
+      && (!near || (Math.hypot(sg.mx - near.x, sg.mz - near.z) >= minD && Math.hypot(sg.mx - near.x, sg.mz - near.z) <= maxD)));
+    return segs[Math.floor(Math.random() * segs.length)] || world.segments.find((sg) => sg.d === 0);
   },
 
   startRound() {
     if (!this.isHost) return;
-    const { N } = CITY;
     const ids = [...this.players.keys()];
     const slots = {}, roles = {};
-    const i = Math.floor(Math.random() * N), j = Math.floor(Math.random() * (N + 1));
+    const first = this.pickGrid(null), i = first.i, j = first.j;
     let startPos;
     if (this.mode === 'cops') {
       const order = ids.slice().sort(() => Math.random() - 0.5);
@@ -511,20 +517,15 @@ const MP = {
       order.forEach((id, k) => { roles[id] = k < cops ? 'cop' : 'robber'; });
       startPos = this.grid(order.filter((id) => roles[id] === 'robber'), i, j, slots);
       // The police start a few blocks away.
-      this.grid(order.filter((id) => roles[id] === 'cop'), (i + 3) % N, (j + 3) % (N + 1), slots);
+      const away = this.pickGrid(startPos, 180, 420);
+      this.grid(order.filter((id) => roles[id] === 'cop'), away.i, away.j, slots);
     } else {
       startPos = this.grid(ids, i, j, slots);
     }
     let goal = null;
     if (this.mode === 'race') {
-      let best = null, bestD = 0;
-      for (let k = 0; k < 300; k++) {
-        const g = world.randomLanePoint();
-        const d = Math.abs(g.x - startPos.x) + Math.abs(g.z - startPos.z);
-        if (d > bestD) { best = g; bestD = d; }
-        if (d >= 360 && d <= 620) { best = g; break; }
-      }
-      goal = { x: best.x, z: best.z };
+      const g = world.lanePointAround(startPos.x, startPos.z, 380, 650);
+      goal = { x: g.x, z: g.z };
     }
     traffic.reset(Math.min(44, quality.traffic + ids.length), startPos);
     const msg = { t: 'start', mode: this.mode, goal, slots, roles, startAt: game.t + 4, raceId: ++this.raceId, duration: CR_DURATION };
@@ -704,7 +705,7 @@ const MP = {
     for (const r of this.remotes.values()) r.frame(dt, game.t);
     if (this.isHost) {
       traffic.update(dt, game.t, streetObstacles());
-      traffic.recycle(dt, inRound ? [actor()].concat(this.remoteList()) : [{ x: CITY.SIZE / 2, z: CITY.SIZE / 2 }]);
+      traffic.recycle(dt, inRound ? [actor()].concat(this.remoteList()) : [MENU_FOCUS]);
       this.snapTimer += dt;
       if (this.snapTimer >= 0.1) {
         this.snapTimer = 0;
@@ -746,7 +747,7 @@ Net.on('hello', (m) => {
   showToast(`${MP.players.get(m.from).name} joined`, 'good');
   // Late arrivals drop straight into Open City or Cops & Robbers (as police); races wait for the next round.
   if (MP.phase === 'running' && MP.mode !== 'race') {
-    const p = world.randomLanePoint();
+    const host = actor(), p = world.lanePointAround(host.x, host.z, 30, 140);
     if (MP.mode === 'cops') { MP.roles[m.from] = 'cop'; Net.send({ t: 'roles', roles: MP.roles, raceId: MP.raceId }); }
     const g = game.mission;
     Net.send({ t: 'start', to: m.from, mode: MP.mode, goal: null, slots: { [m.from]: [p.x, p.z, p.h] }, roles: MP.roles, startAt: game.t + 1, raceId: MP.raceId, duration: g && g.duration ? Math.max(10, g.startAt + g.duration - game.t - 1) : CR_DURATION });

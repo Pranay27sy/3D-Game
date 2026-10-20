@@ -88,19 +88,19 @@
           <span class="shield" aria-hidden="true">72</span>
           <div>
             <h1>Downtown Driver</h1>
-            <p>Port Sundale · open city, missions and Wi-Fi multiplayer</p>
+            <p>Mumbai to Boisar · open world, Western line locals, Wi-Fi multiplayer</p>
           </div>
         </div>
         <div class="brand-side">
-          <div class="coins"><span id="menu-coins">$0</span><small>cash</small></div>
+          <div class="coins"><span id="menu-coins">₹0</span><small>cash</small></div>
           <button type="button" id="btn-settings" class="chip">Settings</button>
         </div>
       </header>
 
       <button type="button" id="btn-open-city" class="hero-card">
-        <span class="card-top"><span class="tag">Free roam</span><span class="lvl" id="menu-packages">0 of 20 hidden packages found</span></span>
-        <span class="hero-name">Open City</span>
-        <span class="card-blurb">Walk, drive, take any car in Port Sundale. Do taxi fares, deliveries and street races for cash, fly off the stunt ramps, find hidden packages and outrun the police. Day turns to night, and sometimes it rains.</span>
+        <span class="card-top"><span class="tag">Open world</span><span class="lvl" id="menu-packages">0 of 24 hidden packages found</span></span>
+        <span class="hero-name">Mumbai</span>
+        <span class="card-blurb">From Colaba and the Gateway of India up through Bandra, Andheri and Borivali to Vasai, Virar, Palghar and Boisar. Drive autos, kaali-peeli taxis and BEST buses, ride the Western line local to Dahanu Road, do fares and deliveries, outrun the police, and hear Mumbai talk back in Marathi.</span>
       </button>
 
       <h2 class="section-label">Driving missions</h2>
@@ -110,7 +110,7 @@
       <button type="button" id="btn-multiplayer" class="mission-card mp-card">
         <span class="card-top"><span class="tag">Wi-Fi</span><span class="lvl">2–10 players</span></span>
         <span class="card-name">Multiplayer</span>
-        <span class="card-blurb">Open City together, races through traffic, or Cops &amp; Robbers. Everyone joins the same Wi-Fi or the host phone's hotspot. No internet needed.</span>
+        <span class="card-blurb">Mumbai together, races through traffic, or Cops &amp; Robbers. Everyone joins the same Wi-Fi or the host phone's hotspot. No internet needed.</span>
       </button>
 
       <h2 class="section-label">Garage</h2>
@@ -164,9 +164,14 @@
     <div class="map-bar">
       <div class="map-legend">
         <span><i style="background:#f2c230"></i>Taxi</span><span><i style="background:#f08a24"></i>Delivery</span><span><i style="background:#d04fd0"></i>Race</span>
-        <span><i style="background:#ff9a2a"></i>Spray &amp; Repair</span><span><i style="background:#4f8dff"></i>Police</span><span><i style="background:#ff5a5a"></i>Hospital</span>
+        <span><i style="background:#ff9a2a"></i>Spray &amp; Repair</span><span><i style="background:#4f8dff"></i>Police</span><span><i style="background:#ff5a5a"></i>Hospital</span><span><i style="background:#b0303c"></i>Railway station</span>
       </div>
-      <p class="map-hint">Tap the map to set a waypoint. Tap it again to clear it.</p>
+      <p class="map-hint">Drag to move. Tap to set a waypoint; tap it again to clear it.</p>
+      <div class="map-zoom">
+        <button type="button" id="btn-map-out" class="btn" aria-label="Zoom out">−</button>
+        <button type="button" id="btn-map-in" class="btn" aria-label="Zoom in">+</button>
+        <button type="button" id="btn-map-me" class="btn">Me</button>
+      </div>
       <button type="button" id="btn-map-close" class="btn primary">Close map</button>
     </div>
   </div>
@@ -186,6 +191,7 @@
       <label class="setting" for="set-sensitivity"><span>Steering sensitivity</span><input id="set-sensitivity" type="range" min="0.5" max="1.5" step="0.05" data-setting="sensitivity"></label>
       <label class="setting" for="set-volume"><span>Sound effects</span><input id="set-volume" type="range" min="0" max="1" step="0.05" data-setting="volume"></label>
       <label class="setting" for="set-music"><span>Radio volume</span><input id="set-music" type="range" min="0" max="1" step="0.05" data-setting="music"></label>
+      <label class="setting check" for="set-voices"><span>People speak Marathi aloud</span><input id="set-voices" type="checkbox" data-setting="voices"></label>
       <label class="setting check" for="set-mute"><span>Mute all sound</span><input id="set-mute" type="checkbox"></label>
       <label class="setting check" for="set-vibration"><span>Vibration</span><input id="set-vibration" type="checkbox" data-setting="vibration"></label>
       <label class="setting check" for="set-swap"><span>Pedals on the left</span><input id="set-swap" type="checkbox" data-setting="swap"></label>
@@ -217,7 +223,7 @@
         <h2 id="room-title" class="dialog-title">Your game room</h2>
         <p id="room-address" class="dialog-text"></p>
         <div id="room-modes" class="modes" role="group" aria-label="Game mode">
-          <button type="button" class="mode" data-mode="roam">Open City</button>
+          <button type="button" class="mode" data-mode="roam">Mumbai</button>
           <button type="button" class="mode" data-mode="race">Race</button>
           <button type="button" class="mode" data-mode="cops">Cops &amp; Robbers</button>
         </div>
@@ -245,6 +251,19 @@
     </div>
   </div>
 
+  <div id="train-panel" class="overlay dim" hidden>
+    <div class="sign dialog" role="dialog" aria-labelledby="train-station">
+      <div class="eyebrow">Western Railway · Mumbai local</div>
+      <h2 id="train-station" class="dialog-title">Dadar · दादर</h2>
+      <p class="dialog-text small">Pick a platform. You'll board the next train, ride at the door, and can get off at any stop.</p>
+      <div class="actions train-dirs">
+        <button type="button" id="btn-train-up" class="btn primary"><b>Towards Churchgate</b><span class="eta"></span></button>
+        <button type="button" id="btn-train-down" class="btn primary"><b>Towards Dahanu Road</b><span class="eta"></span></button>
+      </div>
+      <div class="actions"><button type="button" id="btn-train-cancel" class="btn">Not now</button></div>
+    </div>
+  </div>
+
   <div id="banner" class="banner" hidden>
     <div id="banner-title" class="banner-title">WASTED</div>
     <div id="banner-sub" class="banner-sub"></div>
@@ -254,6 +273,7 @@
 </div>
 
 <script src="vendor/three.min.js"></script>
+<script src="js/mumbai.js"></script>
 <script src="js/world.js"></script>
 <script src="js/effects.js"></script>
 <script src="js/car.js"></script>
@@ -261,6 +281,8 @@
 <script src="js/audio.js"></script>
 <script src="js/radio.js"></script>
 <script src="js/sky.js"></script>
+<script src="js/rail.js"></script>
+<script src="js/speech.js"></script>
 <script src="js/settings.js"></script>
 <script src="js/traffic.js"></script>
 <script src="js/peds.js"></script>

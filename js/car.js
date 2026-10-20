@@ -7,9 +7,20 @@ const VEHICLES = {
   van:    { name: 'Van',            L: 5.2, W: 2.0,  accel: 4.8, vmax: 27, steer: 0.52, brake: 11, toughness: 1.6, price: 700 },
   sports: { name: 'Sports car',     L: 4.4, W: 1.95, accel: 10,  vmax: 47, steer: 0.64, brake: 16, toughness: 0.8, price: 3000 },
   police: { name: 'Police cruiser', L: 4.6, W: 1.9,  accel: 8.5, vmax: 42, steer: 0.62, brake: 15, toughness: 1.3, price: 0, hidden: true },
+  auto:   { name: 'Auto-rickshaw',  L: 2.7, W: 1.4,  accel: 5.2, vmax: 19, steer: 0.78, brake: 10, toughness: 0.6, price: 300 },
+  bus:    { name: 'BEST bus',       L: 10.5, W: 2.5, accel: 3.2, vmax: 22, steer: 0.42, brake: 9,  toughness: 3,   price: 2500 },
 };
 const VEHICLE_IDS = Object.keys(VEHICLES);
 const TAXI_YELLOW = 0xf2b51d;
+const KAALI = 0x16181b;
+
+// Collision circles along a vehicle's length, spaced so nothing slips between them.
+function circleOffsets(L, W, min = 2) {
+  const o = L / 2 - W / 2, n = Math.max(min, Math.ceil(L / W));
+  const out = [];
+  for (let k = 0; k < n; k++) out.push(n === 1 ? 0 : -o + (2 * o * k) / (n - 1));
+  return out;
+}
 
 const CAR = (() => {
   const geos = new Map();
@@ -43,7 +54,9 @@ function buildCarMesh(type, color) {
   if (typeof type === 'number') { color = type; type = 'sedan'; }
   const spec = VEHICLES[type] || VEHICLES.sedan, L = spec.L, W = spec.W, box = CAR.box;
   const group = new THREE.Group();
-  const paint = paintMaterial(type === 'police' ? 0xf4f5f2 : color);
+  // Police are white; Mumbai taxis are kaali-peeli, black with a yellow roof.
+  const paint = paintMaterial(type === 'police' ? 0xf4f5f2 : type === 'taxi' ? KAALI : color);
+  const roofPaint = type === 'taxi' ? paintMaterial(TAXI_YELLOW) : paint;
   const add = (geo, mat, x, y, z, shadow = true) => {
     const m = new THREE.Mesh(geo, mat);
     m.position.set(x, y, z);
@@ -52,9 +65,35 @@ function buildCarMesh(type, color) {
     return m;
   };
   const tailMat = new THREE.MeshStandardMaterial({ color: 0x5a0a0a, emissive: 0xff2a2a, emissiveIntensity: 0.25 });
-  let lampY = 0.74, wheelZ = L / 2 - 0.78, bar = null;
+  let lampY = 0.74, wheelZ = L / 2 - 0.78, bar = null, wheels = null, wscale = 1;
 
-  if (type === 'van') {
+  if (type === 'auto') {
+    const black = paintMaterial(KAALI), yellow = paintMaterial(0xf2c230), green = paintMaterial(0x2f8a4a);
+    add(box(W, 0.5, L - 0.3), black, 0, 0.55, -0.15);
+    add(box(0.9, 0.75, 0.55), black, 0, 0.82, L / 2 - 0.3);
+    add(box(1.15, 0.62, 0.05), CAR.glass, 0, 1.42, L / 2 - 0.62);
+    add(box(W, 0.08, L * 0.78), yellow, 0, 1.86, -0.2);
+    add(box(W, 1.05, 0.08), yellow, 0, 1.32, -L / 2 + 0.06);
+    add(box(0.06, 1.05, L * 0.72), green, W / 2 - 0.03, 1.32, -0.2, false);
+    add(box(0.06, 1.05, L * 0.72), green, -W / 2 + 0.03, 1.32, -0.2, false);
+    lampY = 0.95;
+    wheels = [[0, L / 2 - 0.45], [W / 2 - 0.08, -L / 2 + 0.55], [-W / 2 + 0.08, -L / 2 + 0.55]];
+    wscale = 0.72;
+  } else if (type === 'bus') {
+    const red = paintMaterial(0xc8262c), cream = paintMaterial(0xf0e6cc);
+    add(box(W, 2.7, L), red, 0, 1.75, 0);
+    add(box(W + 0.04, 0.95, L - 1.4), CAR.glass, 0, 2.35, -0.2);
+    add(box(W + 0.03, 0.18, L - 0.4), cream, 0, 1.3, 0, false);
+    add(box(W - 0.1, 0.12, L - 0.4), cream, 0, 3.15, 0);
+    add(box(W - 0.3, 1.1, 0.06), CAR.glass, 0, 2.3, L / 2 + 0.01);
+    // Doors on the left, the kerb side in India.
+    add(box(0.06, 2.1, 1.1), CAR.black, -W / 2 - 0.03, 1.45, L / 2 - 1.6, false);
+    add(box(0.06, 2.1, 1.1), CAR.black, -W / 2 - 0.03, 1.45, -L / 2 + 2.4, false);
+    add(box(W + 0.04, 0.3, L + 0.1), CAR.trim, 0, 0.5, 0, false);
+    lampY = 0.85;
+    wheelZ = L / 2 - 1.9;
+    wscale = 1.4;
+  } else if (type === 'van') {
     add(box(W, 0.9, L), paint, 0, 0.8, 0);
     add(box(W - 0.04, 1.05, L * 0.74), paint, 0, 1.77, -L * 0.13);
     add(box(W - 0.12, 0.72, 0.95), CAR.glass, 0, 1.62, L * 0.24 + 0.47);
@@ -75,7 +114,7 @@ function buildCarMesh(type, color) {
     add(box(W, 0.62, L), paint, 0, 0.66, 0);
     add(box(W + 0.04, 0.22, L + 0.12), CAR.trim, 0, 0.42, 0, false);
     add(box(W - 0.24, 0.58, L * 0.5), CAR.glass, 0, 1.26, -0.25);
-    add(box(W - 0.22, 0.07, L * 0.45), paint, 0, 1.58, -0.25);
+    add(box(W - 0.22, 0.07, L * 0.45), roofPaint, 0, 1.58, -0.25);
     if (type === 'taxi') add(box(0.62, 0.24, 0.26), CAR.signMat, 0, 1.74, -0.25, false);
     if (type === 'police') {
       add(box(W + 0.02, 0.22, L * 0.42), CAR.black, 0, 0.72, 0.05, false);
@@ -92,8 +131,8 @@ function buildCarMesh(type, color) {
   add(box(0.42, 0.16, 0.06), tailMat, -W / 2 + 0.31, lampY + 0.04, -L / 2 - 0.01, false);
 
   const front = [], spinners = [];
-  const wscale = type === 'van' ? 1.12 : 1;
-  for (const [x, z] of [[W / 2 - 0.07, wheelZ], [-W / 2 + 0.07, wheelZ], [W / 2 - 0.07, -wheelZ], [-W / 2 + 0.07, -wheelZ]]) {
+  if (type === 'van') wscale = 1.12;
+  for (const [x, z] of wheels || [[W / 2 - 0.07, wheelZ], [-W / 2 + 0.07, wheelZ], [W / 2 - 0.07, -wheelZ], [-W / 2 + 0.07, -wheelZ]]) {
     const pivot = new THREE.Group();
     pivot.position.set(x, 0.36 * wscale, z);
     const spin = new THREE.Group();
@@ -156,10 +195,7 @@ class Vehicle {
 
   get forward() { return { x: Math.sin(this.h), z: Math.cos(this.h) }; }
 
-  circles() {
-    const o = this.L / 2 - this.W / 2;
-    return [-o, 0, o];
-  }
+  circles() { return circleOffsets(this.L, this.W, 3); }
 
   shift() {
     if (Math.abs(this.v) > 1.5) return false;
@@ -310,11 +346,11 @@ class Vehicle {
       if (o === this || o.noCollide) continue;
       const ddx = this.x - o.x, ddz = this.z - o.z;
       if (ddx * ddx + ddz * ddz > 64 || (o.y || 0) > 1.2) continue;
-      const oL = o.L || 4.3, oW = o.W || 1.86, oo = oL / 2 - oW / 2, r2 = oW / 2 + 0.06;
+      const oL = o.L || 4.3, oW = o.W || 1.86, r2 = oW / 2 + 0.06, theirs = circleOffsets(oL, oW);
       const of = { x: Math.sin(o.h), z: Math.cos(o.h) };
       let hit = null;
       for (const a of mine)
-        for (const b of [-oo, oo]) {
+        for (const b of theirs) {
           const f = this.forward;
           const ax = this.x + f.x * a, az = this.z + f.z * a;
           const bx = o.x + of.x * b, bz = o.z + of.z * b;

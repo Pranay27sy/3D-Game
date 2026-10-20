@@ -14,29 +14,27 @@ class PoliceCar extends Vehicle {
     this.isPolice = true;
     this.unlimitedFuel = true;
     this.wp = null;
+    this.direct = 0;
     this.stuck = 0;
     this.reverse = 0;
     this.giveUp = 0;
   }
 
-  // Next junction towards the target, one block at a time.
+  // Next junction on the shortest road route to the target (creeks and the
+  // coast mean the straight-line direction is often wrong).
   nextWaypoint(world, tx, tz) {
-    const { PITCH, N } = CITY;
-    let ci, cj;
-    if (this.wp) { ci = this.wp.i; cj = this.wp.j; }
-    else {
+    if (!this.wp) {
       // Start with the junction ahead on the road we're on.
-      const f = this.forward;
-      ci = clamp(Math.round((this.x + f.x * PITCH * 0.5) / PITCH), 0, N);
-      cj = clamp(Math.round((this.z + f.z * PITCH * 0.5) / PITCH), 0, N);
-      this.wp = { i: ci, j: cj };
+      const f = this.forward, n = world.nearestNode(this.x + f.x * 36, this.z + f.z * 36);
+      if (n) this.wp = { i: n.i, j: n.j };
       return;
     }
-    const ti = clamp(Math.round(tx / PITCH), 0, N), tj = clamp(Math.round(tz / PITCH), 0, N);
-    const di = ti - ci, dj = tj - cj;
-    if (di === 0 && dj === 0) return;
-    if (Math.abs(di) >= Math.abs(dj)) this.wp = { i: ci + Math.sign(di), j: cj };
-    else this.wp = { i: ci, j: cj + Math.sign(dj) };
+    const tn = world.nearestNode(tx, tz);
+    if (!tn) return;
+    const next = world.nextNodeTowards(this.wp.i, this.wp.j, tn.i, tn.j);
+    if (next) this.wp = next;
+    // Already at the junction nearest the target (or no road route): go straight for it.
+    else this.direct = 6;
   }
 
   drive(dt, world, target, others, aggressive) {
@@ -47,7 +45,8 @@ class PoliceCar extends Vehicle {
       // Pull over and wait to be cleared away.
       input.brake = 1;
     } else {
-      if (dist < 42 || (Math.abs(target.x - this.x) < 5 || Math.abs(target.z - this.z) < 5) && dist < 90) {
+      if (this.direct > 0) this.direct -= dt;
+      if (dist < 42 || this.direct > 0 || (Math.abs(target.x - this.x) < 5 || Math.abs(target.z - this.z) < 5) && dist < 90) {
         // Close: drive at where the target will be.
         const lead = Math.min(1, dist / 30);
         gx = target.x + Math.sin(target.h) * (target.v || 0) * lead;
@@ -56,6 +55,7 @@ class PoliceCar extends Vehicle {
         this.wp = null;
       } else {
         if (!this.wp) this.nextWaypoint(world, target.x, target.z);
+        if (!this.wp) { this.wp = null; input.brake = 1; this.update(dt, input, world, others); return; }
         let n = world.node(this.wp.i, this.wp.j);
         if (Math.hypot(n.x - this.x, n.z - this.z) < 9) {
           this.nextWaypoint(world, target.x, target.z);
@@ -145,13 +145,7 @@ class Police {
       car.v = patrol.v;
       this.game.traffic.take(patrol, target);
     } else {
-      let best = null;
-      for (let k = 0; k < 30; k++) {
-        const p = world.randomLanePoint();
-        const d = Math.hypot(p.x - target.x, p.z - target.z);
-        if (d > 80 && d < 150) { best = p; break; }
-        if (!best || Math.abs(d - 110) < Math.abs(Math.hypot(best.x - target.x, best.z - target.z) - 110)) best = p;
-      }
+      const best = world.lanePointAround(target.x, target.z, 80, 150);
       car.reset(best.x, best.z, best.h);
       car.v = 10;
     }
@@ -163,7 +157,7 @@ class Police {
   update(dt, target, others) {
     const t = this.game.t;
     // Sight: any police car within range sees you.
-    this.seen = this.level > 0 && this.cars.some((c) => !c.wrecked && c.giveUp <= 0 && Math.hypot(c.x - target.x, c.z - target.z) < 75);
+    this.seen = this.level > 0 && !target.hidden && this.cars.some((c) => !c.wrecked && c.giveUp <= 0 && Math.hypot(c.x - target.x, c.z - target.z) < 75);
     if (this.level > 0) {
       if (this.seen) this.unseen = 0;
       else {
@@ -196,7 +190,7 @@ class Police {
     }
 
     // Busted: stopped (or on foot) right next to a police car.
-    if (this.level > 0) {
+    if (this.level > 0 && !target.hidden) {
       const close = this.cars.some((c) => !c.wrecked && c.giveUp <= 0 && Math.hypot(c.x - target.x, c.z - target.z) < (target.inCar ? 7 : 6) && Math.abs(c.v) < 6);
       const still = target.inCar ? Math.abs(target.v) < 1.5 : true;
       this.bust = close && still ? this.bust + dt : Math.max(0, this.bust - dt * 2);

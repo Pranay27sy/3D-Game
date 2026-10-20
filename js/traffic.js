@@ -6,11 +6,13 @@ const WAIT_DIST = STOP_LINE + 0.6 + CAR.LENGTH / 2;
 
 const segKey = (i, j, d) => `${i},${j},${d}`;
 
+// Mumbai traffic: plenty of autos and kaali-peeli taxis, BEST buses, and cars.
 function randomTrafficKind() {
   const r = Math.random();
-  const type = r < 0.04 ? 'police' : r < 0.19 ? 'taxi' : r < 0.31 ? 'van' : r < 0.36 ? 'sports' : 'sedan';
+  const type = r < 0.03 ? 'police' : r < 0.31 ? 'auto' : r < 0.45 ? 'taxi' : r < 0.51 ? 'bus' : r < 0.59 ? 'van' : r < 0.62 ? 'sports' : 'sedan';
   return { type, colorIdx: Math.floor(Math.random() * TRAFFIC_COLORS.length) };
 }
+const CRUISE = { auto: [7, 10], bus: [8, 10], taxi: [9, 12], police: [10, 13], sedan: [9, 13], van: [8, 11], sports: [11, 15] };
 
 function trafficColor(type, colorIdx) { return type === 'taxi' ? TAXI_YELLOW : TRAFFIC_COLORS[colorIdx]; }
 
@@ -18,7 +20,6 @@ class TrafficCar {
   constructor(scene, kind = randomTrafficKind()) {
     this.scene = scene;
     this.setKind(kind.type, kind.colorIdx);
-    this.cruise = 9 + Math.random() * 4;
     this.v = 0;
     this.stun = 0;
     this.ghost = 0;
@@ -36,6 +37,8 @@ class TrafficCar {
     this.L = this.spec.L;
     this.W = this.spec.W;
     this.isPolice = type === 'police';
+    const [lo, hi] = CRUISE[type] || CRUISE.sedan;
+    this.cruise = lo + Math.random() * (hi - lo);
     this.parts = buildCarMesh(type, this.color);
     this.parts.group.visible = shown;
     this.scene.add(this.parts.group);
@@ -72,7 +75,7 @@ class TrafficCar {
   startTurn(world) {
     const { HALF, LANE } = CITY;
     const ni = this.i + DIRS[this.d].x, nj = this.j + DIRS[this.d].z;
-    const n = world.node(ni, nj), d1 = DIRS[this.d], r1 = rightOf(this.d), d2 = DIRS[this.nextDir], r2 = rightOf(this.nextDir);
+    const n = world.node(ni, nj), d1 = DIRS[this.d], r1 = laneSide(this.d), d2 = DIRS[this.nextDir], r2 = laneSide(this.nextDir);
     const E = { x: this.x, z: this.z };
     const X = { x: n.x + d2.x * HALF + r2.x * LANE, z: n.z + d2.z * HALF + r2.z * LANE };
     let C;
@@ -80,7 +83,8 @@ class TrafficCar {
     else if (this.nextDir === reverseDir(this.d)) C = { x: n.x + d1.x * 4, z: n.z + d1.z * 4 };
     else {
       // Left turns sweep wider so opposing left-turners pass each other cleanly.
-      const k = this.nextDir === (this.d + 3) % 4 ? 1.6 : 1;
+      // The turn across oncoming traffic sweeps wider so opposing turners pass cleanly.
+      const k = this.nextDir === crossingTurn(this.d) ? 1.6 : 1;
       C = { x: n.x + (r1.x + r2.x) * LANE * k, z: n.z + (r1.z + r2.z) * LANE * k };
     }
     this.curve = { E, C, X, len: (Math.hypot(C.x - E.x, C.z - E.z) + Math.hypot(X.x - C.x, X.z - C.z) + Math.hypot(X.x - E.x, X.z - E.z)) / 2 };
@@ -113,7 +117,8 @@ class Traffic {
   place(car, focus, minD = 0, maxD = Infinity) {
     const { HALF, BLOCK } = CITY;
     for (let tries = 0; tries < 60; tries++) {
-      const p = this.world.randomLanePoint();
+      // The map is long, so look for spots near the focus rather than anywhere.
+      const p = focus ? this.world.lanePointAround(focus.x, focus.z, minD, maxD === Infinity ? 260 : maxD) : this.world.randomLanePoint();
       if (this.blocked.has(segKey(p.i, p.j, p.d))) continue;
       const s = HALF + 2 + Math.random() * (BLOCK - WAIT_DIST - 4);
       const q = this.world.lanePoint(p.i, p.j, p.d, s);
@@ -163,10 +168,11 @@ class Traffic {
     const world = this.world;
     const others = this.cars.concat(obstacles);
     const { PITCH, HALF } = CITY;
-    const stopS = PITCH - WAIT_DIST;
 
     for (const c of this.cars) {
       let target = c.cruise, reason = '';
+      // Where this car's centre waits so its nose sits on the stop line.
+      const stopS = PITCH - (STOP_LINE + 0.6 + c.L / 2);
       if (c.stun > 0) { c.stun -= dt; target = 0; }
       if (c.stun <= 0) c.honked = false;
 

@@ -51,7 +51,11 @@ scene.add(sun, sun.target);
 
 Effects.init(scene);
 const world = new World(scene);
+Rail.build(scene, world);
+Speech.init(scene);
 Sky.init({ scene, hemi, sun, world });
+// The menu camera circles Worli and the Sea Link.
+const MENU_FOCUS = { x: 150, z: 4540 };
 const currentPaint = () => PAINTS.find((p) => p.id === Save.data.paint) || PAINTS[0];
 const player = new PlayerCar(scene, Save.data.car || 'sedan', currentPaint().hex);
 player.isPlayer = true;
@@ -102,6 +106,7 @@ function applySettings() {
   Sound.setVolume(settings.volume);
   Sound.setMusicVolume(settings.music);
   Feel.enabled = settings.vibration;
+  Speech.enabled = settings.voices !== false;
   $('controls').classList.toggle('is-tilt', settings.steering === 'tilt');
   $('controls').classList.toggle('is-swapped', settings.swap);
   resize();
@@ -116,17 +121,17 @@ function resize() {
 addEventListener('resize', resize);
 
 // ---------- Camera ----------
-const cam = { pos: new THREE.Vector3(CITY.SIZE / 2, 120, CITY.SIZE + 140), look: new THREE.Vector3(CITY.SIZE / 2, 0, CITY.SIZE / 2), yaw: 0, offset: 0, manual: 0 };
+const cam = { pos: new THREE.Vector3(MENU_FOCUS.x, 120, MENU_FOCUS.z + 260), look: new THREE.Vector3(MENU_FOCUS.x, 0, MENU_FOCUS.z), yaw: 0, offset: 0, manual: 0 };
 const CAM_MODES = ['chase', 'hood', 'high'];
 const CAM_LABELS = { chase: 'Chase view', hood: 'First person', high: 'High view' };
 const tmpPos = new THREE.Vector3(), tmpLook = new THREE.Vector3();
 
 // Pull the camera in front of any building between it and what it looks at.
 function clearView(look, pos) {
-  const rects = world.footRectsNear(pos.x, pos.z).concat(world.footRectsNear(look.x, look.z));
+  const rects = world.buildingRectsNear(pos.x, pos.z).concat(world.buildingRectsNear(look.x, look.z));
   for (let s = 0.15; s <= 1.0001; s += 0.12) {
     const x = look.x + (pos.x - look.x) * s, z = look.z + (pos.z - look.z) * s;
-    if (rects.some((r) => r.x1 - r.x0 < 900 && x > r.x0 - 0.4 && x < r.x1 + 0.4 && z > r.z0 - 0.4 && z < r.z1 + 0.4)) {
+    if (rects.some((r) => x > r.x0 - 0.4 && x < r.x1 + 0.4 && z > r.z0 - 0.4 && z < r.z1 + 0.4)) {
       const k = Math.max(0.1, s - 0.12);
       pos.set(look.x + (pos.x - look.x) * k, pos.y, look.z + (pos.z - look.z) * k);
       return;
@@ -139,8 +144,8 @@ function updateCamera(dt, snap) {
   let k = snap ? 1 : 1 - Math.exp(-dt * 6);
   if (game.state === 'menu') {
     const a = game.t * 0.04;
-    tmpPos.set(CITY.SIZE / 2 + Math.sin(a) * 300, 140, CITY.SIZE / 2 + Math.cos(a) * 300);
-    tmpLook.set(CITY.SIZE / 2, 0, CITY.SIZE / 2);
+    tmpPos.set(MENU_FOCUS.x + Math.sin(a) * 260, 110, MENU_FOCUS.z + Math.cos(a) * 260);
+    tmpLook.set(MENU_FOCUS.x, 0, MENU_FOCUS.z);
     k = snap ? 1 : 1 - Math.exp(-dt * 2);
   } else {
     if (drag) { cam.offset -= drag; cam.manual = 1.5; }
@@ -153,8 +158,9 @@ function updateCamera(dt, snap) {
         tmpLook.set(p.x + fx * 4, y + 1.2, p.z + fz * 4);
       } else if (game.camMode === 'hood') {
         const f = p.forward;
-        // Driver's seat is on the left for right-hand traffic.
-        tmpPos.set(p.x + f.x * 0.75 + f.z * 0.36, y + (p.type === 'van' ? 1.9 : p.type === 'sports' ? 1.05 : 1.32), p.z + f.z * 0.75 - f.x * 0.36);
+        // Indian cars are right-hand drive: the driver's seat is on the right.
+        const eye = { van: 1.9, sports: 1.05, bus: 2.5, auto: 1.3 }[p.type] || 1.32;
+        tmpPos.set(p.x + f.x * 0.75 - f.z * 0.36, y + eye, p.z + f.z * 0.75 + f.x * 0.36);
         tmpLook.set(tmpPos.x + fx * 12, tmpPos.y - 0.2, tmpPos.z + fz * 12);
         k = 1;
       } else {
@@ -177,6 +183,9 @@ function updateCamera(dt, snap) {
       }
     }
     if (game.camMode !== 'hood') clearView(tmpLook, tmpPos);
+    // Under the railway viaduct, keep the camera below the deck so it can still see you.
+    const me = actor();
+    if (Math.abs(tmpPos.x - Rail.X) < 7 && (me.y || 0) < Rail.DECK - 1 && tmpPos.y > Rail.DECK - 1.4) tmpPos.y = Rail.DECK - 1.4;
   }
   cam.pos.lerp(tmpPos, k);
   cam.look.lerp(tmpLook, k);
@@ -231,17 +240,19 @@ function addCash(n, reason) {
   showToast(`${reason} ${n >= 0 ? '+' : '−'}${money(Math.abs(n))}`, n >= 0 ? 'good' : '');
 }
 
+function openWorldOf(m) { return m && (m.type === 'open' ? m : m.world); }
+
 function updateHud() {
-  const m = game.mission, open = m.type === 'open' || !!m.world;
+  const m = game.mission, ow = openWorldOf(m);
   const info = m.hud();
   setText(hud.statLabel, info.label);
   setText(hud.stat, info.value);
   hud.stat.classList.toggle('is-warn', info.warn);
   setText(hud.objective, m.objective());
-  if (open) setText(hud.level, `${DISTRICT_NAMES[world.districtAt(actor().x, actor().z)]} · ${Sky.clock()}${Sky.weather === 'rain' ? ' · Rain' : ''}`);
+  if (ow) setText(hud.level, `${world.areaAt(actor().x, actor().z)} · ${Sky.clock()}${Sky.weather === 'rain' ? ' · Rain' : ''}`);
 
-  const inCar = game.avatar === 'car', me = actor();
-  setText(hud.speed, String(Math.round(Math.abs(inCar ? player.v : walker.speed) * 3.6)));
+  const inCar = game.avatar === 'car', me = actor(), riding = ow && ow.rail;
+  setText(hud.speed, String(Math.round(Math.abs(inCar ? player.v : riding ? walker.v : walker.speed) * 3.6)));
   setText(hud.gear, player.gear);
   hud.gear.classList.toggle('is-reverse', player.gear === 'R');
   setText(hud.healthLabel, inCar ? 'Condition' : 'Health');
@@ -260,18 +271,11 @@ function updateHud() {
     [...hud.stars.children].forEach((s, k) => s.classList.toggle('is-on', k < level && !flash));
   }
 
-  // Context button: get out, or get into the nearest car.
-  const ow = m.type === 'open' ? m : m.world;
-  if (ow && game.state === 'playing') {
-    if (inCar) {
-      hud.enter.hidden = Math.abs(player.v) > 6;
-      setText(hud.enter, 'Get out');
-    } else {
-      const near = ow.enterable()[0];
-      hud.enter.hidden = !near;
-      if (near) setText(hud.enter, near.kind === 'parked' ? 'Get in' : near.kind === 'police' || near.c.isPolice ? 'Steal police car' : 'Take car');
-    }
-  } else hud.enter.hidden = true;
+  // Context button: get in or out, take the train, get off the train.
+  const ctxAction = ow && game.state === 'playing' ? ow.context() : null;
+  hud.enter.hidden = !ctxAction;
+  if (ctxAction) setText(hud.enter, ctxAction.label);
+  $('controls').classList.toggle('is-riding', !!riding);
   hud.radio.hidden = !inCar;
   setText(hud.radio, Radio.on ? 'Radio' : 'Radio off');
   hud.map.hidden = !ow;
@@ -282,17 +286,20 @@ function updateHud() {
     const yaw = inCar ? player.h : cam.yaw, fx = Math.sin(yaw), fz = Math.cos(yaw), dx = target.x - me.x, dz = target.z - me.z;
     const rel = Math.atan2(dx * -fz + dz * fx, dx * fx + dz * fz);
     hud.navArrow.style.transform = `rotate(${rel.toFixed(3)}rad)`;
-    setText(hud.navDist, `${Math.round(Math.hypot(dx, dz))} m`);
+    const d = Math.hypot(dx, dz);
+    setText(hud.navDist, d >= 1000 ? `${(d / 1000).toFixed(1)} km` : `${Math.round(d)} m`);
   }
   drawMinimap();
 }
 
-// GPS route along the street grid: to the nearest junction, along one axis, then the other.
+// GPS: the road route to the target, refreshed once a second.
+let gps = { at: -10, pts: [], key: '' };
 function routeTo(from, to) {
-  const { PITCH, N } = CITY;
-  const ni = (v) => clamp(Math.round(v / PITCH), 0, N);
-  const si = ni(from.x), sj = ni(from.z), ti = ni(to.x), tj = ni(to.z);
-  return [from, { x: si * PITCH, z: sj * PITCH }, { x: ti * PITCH, z: sj * PITCH }, { x: ti * PITCH, z: tj * PITCH }, to];
+  const key = `${Math.round(to.x)},${Math.round(to.z)}`;
+  if (game.t - gps.at < 1 && gps.key === key) return [from].concat(gps.pts, [to]);
+  const a = world.nearestNode(from.x, from.z), b = world.nearestNode(to.x, to.z);
+  gps = { at: game.t, key, pts: a && b ? world.route(a.i, a.j, b.i, b.j) : [] };
+  return [from].concat(gps.pts, [to]);
 }
 
 function blipsFor(m) {
@@ -315,32 +322,48 @@ function drawBlip(g, x, y, b, size) {
   g.beginPath(); g.arc(x, y, size * (b.kind === 'friend' ? 0.55 : 0.75), 0, Math.PI * 2); g.fill(); g.stroke();
   const icon = BLIP_ICONS[b.kind];
   if (icon) {
-    g.fillStyle = '#0a2042';
+    g.fillStyle = b.kind === 'station' ? '#ffffff' : '#0a2042';
     g.font = `900 ${Math.round(size)}px Overpass, Arial, sans-serif`;
     g.textAlign = 'center'; g.textBaseline = 'middle';
     g.fillText(icon, x, y + 1);
   }
 }
 
-function drawCityBase(g, X, Y, s) {
-  const { SIZE, PITCH, N, HALF } = CITY;
-  const tint = { downtown: '#33507a', commercial: '#3a4f6a', residential: '#3e5a4c', industrial: '#4a4d52', park: '#3f6a3a', plaza: '#5a5546', stunts: '#5a4a30', parking: '#40444a' };
-  for (const b of world.info) {
-    g.fillStyle = tint[b.district];
-    g.fillRect(X(b.x0), Y(b.z0), (b.x1 - b.x0) * s, (b.z1 - b.z0) * s);
-  }
-  g.strokeStyle = 'rgba(232, 238, 246, 0.6)';
-  g.lineWidth = Math.max(2, CITY.ROAD * s);
+const MAP_TINT = {
+  city: '#33507a', mid: '#3a4f6a', res: '#4a5f6c', dense: '#6a5a4a', industrial: '#4a4d52', town: '#5a5a6a', park: '#3f6a3a', gateway: '#7a6a4a',
+  airport: '#55585c', beach: '#d8c690', farm: '#5f7a3a', stunts: '#8a7a5a', parking: '#40444a', forest: '#2f5a2a', wild: '#5a6a3a',
+};
+
+// The map for the area between world x0..x1, z0..z1, drawn with X(), Y() and scale s.
+function drawCityBase(g, X, Y, s, x0, z0, x1, z1) {
+  const { PITCH, HALF, NX, NZ } = CITY;
+  g.fillStyle = '#2f7fae';
+  g.fillRect(X(x0), Y(z0), (x1 - x0) * s, (z1 - z0) * s);
+  const j0 = clamp(Math.floor(z0 / PITCH) - 1, 0, NZ - 1), j1 = clamp(Math.floor(z1 / PITCH) + 1, 0, NZ - 1);
+  const i0 = clamp(Math.floor(x0 / PITCH) - 1, 0, NX - 1), i1 = clamp(Math.floor(x1 / PITCH) + 1, 0, NX - 1);
+  for (let j = j0; j <= j1; j++)
+    for (let i = i0; i <= i1; i++) {
+      const kind = world.kind(i, j);
+      if (kind === 'water') continue;
+      g.fillStyle = MAP_TINT[kind] || '#4a5a4a';
+      // Land fills its whole cell so the coastline reads as one shape.
+      g.fillRect(X(i * PITCH), Y(j * PITCH), PITCH * s + 0.5, PITCH * s + 0.5);
+    }
+  g.strokeStyle = 'rgba(232, 238, 246, 0.75)';
+  g.lineWidth = Math.max(1.5, CITY.ROAD * s * 0.8);
   g.beginPath();
-  for (let k = 0; k <= N; k++) {
-    g.moveTo(X(k * PITCH), Y(-HALF)); g.lineTo(X(k * PITCH), Y(SIZE + HALF));
-    g.moveTo(X(-HALF), Y(k * PITCH)); g.lineTo(X(SIZE + HALF), Y(k * PITCH));
-  }
+  for (let j = j0; j <= j1 + 1; j++)
+    for (let i = i0; i <= i1 + 1; i++) {
+      if (world.roadSet.has(`h${i},${j}`)) { g.moveTo(X(i * PITCH - HALF), Y(j * PITCH)); g.lineTo(X((i + 1) * PITCH + HALF), Y(j * PITCH)); }
+      if (world.roadSet.has(`v${i},${j}`)) { g.moveTo(X(i * PITCH), Y(j * PITCH - HALF)); g.lineTo(X(i * PITCH), Y((j + 1) * PITCH + HALF)); }
+    }
   g.stroke();
-  g.fillStyle = '#2f86b8';
-  g.fillRect(X(-200), Y(SIZE + HALF + 46), (SIZE + 400) * s, 400 * s);
-  g.fillStyle = '#e8d9a8';
-  g.fillRect(X(-200), Y(SIZE + HALF + 0.6), (SIZE + 400) * s, 46 * s);
+  // The Western line.
+  g.strokeStyle = '#7a1f2b';
+  g.lineWidth = Math.max(2, 4 * s);
+  g.setLineDash([Math.max(3, 10 * s), Math.max(2, 5 * s)]);
+  g.beginPath(); g.moveTo(X(Rail.X), Y(Math.max(z0, Rail.stations[Rail.stations.length - 1].z - 70))); g.lineTo(X(Rail.X), Y(Math.min(z1, Rail.stations[0].z + 70))); g.stroke();
+  g.setLineDash([]);
 }
 
 function drawRoute(g, X, Y, target) {
@@ -373,9 +396,7 @@ function drawMinimap() {
   g.save();
   g.clearRect(0, 0, size, size);
   g.beginPath(); g.arc(size / 2, size / 2, size / 2, 0, Math.PI * 2); g.clip();
-  g.fillStyle = '#5b7a4a';
-  g.fillRect(0, 0, size, size);
-  drawCityBase(g, X, Y, s);
+  drawCityBase(g, X, Y, s, me.x - span / 2, me.z - span / 2, me.x + span / 2, me.z + span / 2);
   const m = game.mission;
   const target = m.navTarget ? m.navTarget() : m.goal;
   if (target) drawRoute(g, X, Y, target);
@@ -384,50 +405,81 @@ function drawMinimap() {
   for (const b of blipsFor(m)) {
     let x = X(b.x), y = Y(b.z);
     const dx = x - size / 2, dy = y - size / 2, d = Math.hypot(dx, dy), max = size / 2 - 14;
-    if (d > max) { if (b.kind === 'cop' || b.kind === 'friend') continue; x = size / 2 + (dx / d) * max; y = size / 2 + (dy / d) * max; }
+    if (d > max) {
+      if (b.kind === 'cop' || b.kind === 'friend' || b.kind === 'station' || b.kind === 'police' || b.kind === 'hospital' || b.kind === 'spray') continue;
+      x = size / 2 + (dx / d) * max; y = size / 2 + (dy / d) * max;
+    }
     drawBlip(g, x, y, b, 16);
   }
   drawPlayerArrow(g, size / 2, size / 2, game.avatar === 'car' ? player.h : walker.h, 12);
   g.restore();
 }
 
-// Full-screen city map; tap to set a waypoint.
+// Full-screen map you can drag and zoom; tap to set a waypoint.
+const mapView = { cx: 0, cz: 0, ppm: 1, drag: null };
 function drawFullMap() {
   const c = $('map-canvas'), g = c.getContext('2d');
-  const w = c.clientWidth, h = c.clientHeight, ratio = Math.min(2, window.devicePixelRatio || 1);
-  if (c.width !== Math.round(w * ratio)) { c.width = Math.round(w * ratio); c.height = Math.round(h * ratio); }
-  // Leave room at the bottom for the legend bar.
-  const W = c.width, H = c.height, pad = 16 * ratio, bar = $('map').querySelector('.map-bar').offsetHeight * ratio + 24 * ratio;
-  const s = Math.min((W - pad * 2) / (CITY.SIZE + 40), (H - pad - bar) / (CITY.SIZE + 50));
-  const ox = (W - CITY.SIZE * s) / 2, oz = pad + 10 * ratio;
-  const X = (x) => ox + x * s, Y = (z) => oz + z * s;
-  c._map = { ox, oz, s, ratio };
-  g.fillStyle = '#5b7a4a';
+  const ratio = Math.min(2, window.devicePixelRatio || 1);
+  if (c.width !== Math.round(c.clientWidth * ratio) || c.height !== Math.round(c.clientHeight * ratio)) {
+    c.width = Math.round(c.clientWidth * ratio);
+    c.height = Math.round(c.clientHeight * ratio);
+  }
+  const W = c.width, H = c.height, s = mapView.ppm * ratio;
+  const X = (x) => W / 2 + (x - mapView.cx) * s, Y = (z) => H / 2 + (z - mapView.cz) * s;
+  c._map = { W, H, s, ratio };
+  const x0 = mapView.cx - W / 2 / s, x1 = mapView.cx + W / 2 / s, z0 = mapView.cz - H / 2 / s, z1 = mapView.cz + H / 2 / s;
+  g.fillStyle = '#2f7fae';
   g.fillRect(0, 0, W, H);
-  drawCityBase(g, X, Y, s);
-  g.fillStyle = 'rgba(244, 246, 242, 0.85)';
-  g.font = `800 ${Math.round(11 * ratio)}px Overpass, Arial, sans-serif`;
-  g.textAlign = 'center'; g.textBaseline = 'middle';
-  const labels = { downtown: [3, 3.6], commercial: [1.5, 1.1], residential: [6.3, 6.6], industrial: [2.5, 0.25] };
-  for (const [d, [bi, bj]] of Object.entries(labels)) g.fillText(DISTRICT_NAMES[d].toUpperCase(), X(bi * CITY.PITCH), Y(bj * CITY.PITCH));
-  g.fillText('BEACH', X(CITY.SIZE / 2), Y(CITY.SIZE + 30));
+  drawCityBase(g, X, Y, s, x0, z0, x1, z1);
   const m = game.mission;
   const target = m.navTarget ? m.navTarget() : m.goal;
   if (target) drawRoute(g, X, Y, target);
+  // Area names, and station names when zoomed in.
+  g.textAlign = 'center'; g.textBaseline = 'middle';
+  g.font = `800 ${Math.round(12 * ratio)}px Overpass, Arial, sans-serif`;
+  g.fillStyle = 'rgba(244, 246, 242, 0.9)';
+  const seen = new Set(), placed = [];
+  // Skip a label that would overlap one already drawn (small screens, zoomed out).
+  const fits = (x, y, w, h) => {
+    if (placed.some((r) => Math.abs(r.x - x) * 2 < r.w + w && Math.abs(r.y - y) * 2 < r.h + h)) return false;
+    placed.push({ x, y, w, h });
+    return true;
+  };
+  for (const [name, aj0, aj1, ai0, ai1] of MUMBAI.areas) {
+    if (seen.has(name)) continue;
+    seen.add(name);
+    const ax = ((ai0 + Math.min(ai1, 5) + 1) / 2) * CITY.PITCH, az = ((aj0 + aj1 + 1) / 2) * CITY.PITCH;
+    if (az < z0 || az > z1) continue;
+    if ((aj1 - aj0 + 1) * CITY.PITCH * s < 18 * ratio && s < 0.6 * ratio) continue;
+    const label = name.toUpperCase(), lx = X(ax + CITY.PITCH * 1.5), ly = Y(az);
+    if (fits(lx, ly, g.measureText(label).width + 6 * ratio, 15 * ratio)) g.fillText(label, lx, ly);
+  }
   for (const b of blipsFor(m)) drawBlip(g, X(b.x), Y(b.z), b, 14 * ratio);
+  if (s > 0.5 * ratio) {
+    g.font = `700 ${Math.round(11 * ratio)}px Overpass, "Noto Sans Devanagari", Arial, sans-serif`;
+    g.textAlign = 'right';
+    g.fillStyle = '#ffffff';
+    for (const st of Rail.stations) if (st.z > z0 && st.z < z1) g.fillText(`${st.name} · ${st.marathi}`, X(Rail.X) - 14 * ratio, Y(st.z));
+  }
   const me = actor();
   drawPlayerArrow(g, X(me.x), Y(me.z), game.avatar === 'car' ? player.h : walker.h, 12 * ratio);
 }
 
 function openMap() {
-  if (!game.mission || game.state !== 'playing') return;
-  const ow = game.mission.type === 'open' || game.mission.world;
-  if (!ow) return;
+  if (!game.mission || game.state !== 'playing' || !openWorldOf(game.mission)) return;
   $('map').hidden = false;
   game.menuOpen = true;
+  const me = actor(), c = $('map-canvas');
+  mapView.cx = me.x;
+  mapView.cz = me.z;
+  mapView.ppm = Math.max(0.15, c.clientHeight / 1100);
   drawFullMap();
 }
 function closeMap() { $('map').hidden = true; game.menuOpen = false; }
+function zoomMap(f) {
+  mapView.ppm = clamp(mapView.ppm * f, 0.06, 3);
+  drawFullMap();
+}
 
 // ---------- Game flow ----------
 function show(id, on) { $(id).hidden = !on; }
@@ -524,8 +576,8 @@ function goMenu() {
   show('menu', true);
   renderMenu();
   Sky.setCycle(true);
-  traffic.reset(quality.traffic);
-  peds.reset(quality.peds, null);
+  traffic.reset(quality.traffic, MENU_FOCUS);
+  peds.reset(quality.peds, MENU_FOCUS);
 }
 
 function startMission(type) {
@@ -728,6 +780,12 @@ Input.on('camera', () => {
 Input.on('horn', () => {
   Sound.init();
   Sound.horn();
+  // Someone ahead turns round and tells you off.
+  if (game.state === 'playing' && game.avatar === 'car') {
+    const f = player.forward;
+    const p = peds.list.find((q) => q.state !== 'down' && Math.hypot(q.x - player.x, q.z - player.z) < 18 && (q.x - player.x) * f.x + (q.z - player.z) * f.z > 0);
+    if (p) Speech.say('horn', p, player);
+  }
   if (MP.active && game.state === 'playing') Net.send({ t: 'horn' });
 });
 Input.on('pause', () => {
@@ -743,9 +801,9 @@ Input.on('mute', () => {
 $('set-mute').addEventListener('input', () => Sound.setMuted($('set-mute').checked));
 Input.on('enter', () => {
   if (game.state !== 'playing' || game.menuOpen) return;
-  const m = game.mission, ow = m.type === 'open' ? m : m.world;
-  if (!ow || ow.frozen()) return;
-  if (game.avatar === 'car') ow.exitCar(); else ow.enterNearest();
+  const ow = openWorldOf(game.mission);
+  const act = ow && ow.context();
+  if (act) act.run();
 });
 Input.on('map', () => { if ($('map').hidden) openMap(); else closeMap(); });
 Input.on('radio', () => {
@@ -768,15 +826,38 @@ $('btn-open-city').addEventListener('click', startOpenWorld);
 $('btn-settings').addEventListener('click', openSettings);
 $('btn-settings-close').addEventListener('click', closeSettings);
 $('btn-map-close').addEventListener('click', closeMap);
-$('map-canvas').addEventListener('click', (e) => {
-  const c = $('map-canvas'), mp = c._map;
-  if (!mp) return;
-  const r = c.getBoundingClientRect();
-  const x = ((e.clientX - r.left) * mp.ratio - mp.ox) / mp.s, z = ((e.clientY - r.top) * mp.ratio - mp.oz) / mp.s;
-  if (x < -20 || z < -20 || x > CITY.SIZE + 20 || z > CITY.SIZE + 20) return;
-  game.waypoint = game.waypoint && Math.hypot(game.waypoint.x - x, game.waypoint.z - z) < 25 ? null : { x, z };
-  drawFullMap();
-});
+// Map: drag to move around, tap to set (or clear) a waypoint.
+{
+  const c = $('map-canvas');
+  c.addEventListener('pointerdown', (e) => { c.setPointerCapture?.(e.pointerId); mapView.drag = { x: e.clientX, y: e.clientY, moved: false }; });
+  c.addEventListener('pointermove', (e) => {
+    const d = mapView.drag;
+    if (!d) return;
+    const dx = e.clientX - d.x, dy = e.clientY - d.y;
+    if (!d.moved && Math.hypot(dx, dy) < 6) return;
+    d.moved = true;
+    mapView.cx -= dx / mapView.ppm;
+    mapView.cz -= dy / mapView.ppm;
+    d.x = e.clientX; d.y = e.clientY;
+    drawFullMap();
+  });
+  c.addEventListener('pointerup', (e) => {
+    const d = mapView.drag;
+    mapView.drag = null;
+    if (!d || d.moved || !c._map) return;
+    const r = c.getBoundingClientRect(), mp = c._map;
+    const x = mapView.cx + ((e.clientX - r.left) * mp.ratio - mp.W / 2) / mp.s, z = mapView.cz + ((e.clientY - r.top) * mp.ratio - mp.H / 2) / mp.s;
+    game.waypoint = game.waypoint && Math.hypot(game.waypoint.x - x, game.waypoint.z - z) < 40 ? null : { x, z };
+    drawFullMap();
+  });
+  c.addEventListener('wheel', (e) => { e.preventDefault(); zoomMap(e.deltaY < 0 ? 1.25 : 0.8); }, { passive: false });
+  $('btn-map-in').addEventListener('click', () => zoomMap(1.5));
+  $('btn-map-out').addEventListener('click', () => zoomMap(1 / 1.5));
+  $('btn-map-me').addEventListener('click', () => { const me = actor(); mapView.cx = me.x; mapView.cz = me.z; drawFullMap(); });
+  $('btn-train-up').addEventListener('click', () => { const ow = openWorldOf(game.mission); if (ow) ow.waitFor('up'); });
+  $('btn-train-down').addEventListener('click', () => { const ow = openWorldOf(game.mission); if (ow) ow.waitFor('down'); });
+  $('btn-train-cancel').addEventListener('click', () => { const ow = openWorldOf(game.mission); if (ow) ow.closeTrainPanel(); });
+}
 document.addEventListener('visibilitychange', () => { if (document.hidden && !MP.active) pause(); });
 addEventListener('blur', () => { if (!MP.active) pause(); });
 
@@ -792,6 +873,7 @@ function checkRedLight() {
   lastJunction = j;
 }
 
+peds.onDodge = (ped, vehicle) => { if (vehicle === player && game.state === 'playing') Speech.say('near', ped, player); };
 peds.onHit = (ped, vehicle, speed) => {
   if (vehicle !== player || game.state !== 'playing') return;
   Sound.crash(speed * 0.5);
@@ -836,7 +918,7 @@ function stepPlaying(dt) {
       }
     }
     checkRedLight();
-  } else {
+  } else if (!(openWorldOf(m) && openWorldOf(m).controlsPlayer())) {
     const input = hold ? { mx: 0, my: 0, run: false, jump: false } : Input.state;
     walker.update(dt, input, world, traffic.cars.concat(m.statics, policeCars(), MP.obstacles().filter((o) => o.mode !== 'foot')), cam.yaw);
     for (const e of walker.events.splice(0)) {
@@ -862,26 +944,29 @@ function frame(now) {
   if (st === 'playing') stepPlaying(dt);
   if (running) {
     const me = actor();
-    const focus = st === 'menu' ? [{ x: CITY.SIZE / 2, z: CITY.SIZE / 2 }] : [me].concat(MP.remoteList());
+    const focus = st === 'menu' ? [MENU_FOCUS] : [me].concat(MP.remoteList());
     if (MP.active) MP.frame(dt);
     else {
       traffic.update(dt, game.t, streetObstacles());
       if (st !== 'menu') traffic.recycle(dt, focus);
     }
     const threats = st === 'playing' ? (game.avatar === 'car' ? [player] : []).concat(policeCars(), MP.remoteList().filter((r) => r.mode !== 'foot')) : [];
-    peds.update(dt, game.t, threats, st === 'menu' ? null : me);
+    peds.update(dt, game.t, threats, st === 'menu' ? MENU_FOCUS : me);
     Effects.update(dt);
+    Speech.update(dt);
+    Rail.update(game.t, camera.position);
     Sky.update(dt, camera, st !== 'menu' && game.avatar === 'car' ? player : null);
     if (!$('map').hidden && Math.floor(game.t * 4) !== Math.floor((game.t - dt) * 4)) drawFullMap();
   }
   Sound.setEngine(player.v, Input.state.throttle, st === 'playing' && game.avatar === 'car' && !player.wrecked);
   updateCamera(dt, false);
+  world.updateVisibility(camera.position.x, camera.position.z, quality.far + 60);
   renderer.render(scene, camera);
 }
 
 applySettings();
-traffic.reset(quality.traffic);
-peds.reset(quality.peds, null);
+traffic.reset(quality.traffic, MENU_FOCUS);
+peds.reset(quality.peds, MENU_FOCUS);
 player.show(false);
 renderMenu();
 updateCamera(0, true);
